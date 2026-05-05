@@ -1,0 +1,131 @@
+{% extends "_base.html" %}
+{% block title %}Manual Transactions · {{ period }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="location.href='/admin/transactions?period='+this.value">
+    {% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+<section class="hero">
+  <div class="card"><div class="label">Manual entries</div><div class="num">{{ summary.count }}</div></div>
+  <div class="card accent"><div class="label">Manual money in</div><div class="num">€{{ "{:,.0f}".format(summary.in) }}</div></div>
+  <div class="card"><div class="label">Manual expenses</div><div class="num">€{{ "{:,.0f}".format(summary.out) }}</div></div>
+</section>
+
+{% if split %}
+<section class="block">
+  <h2>Payment split for {{ preselect_name or preselect_contact }}</h2>
+  <p class="muted small">CID {{ preselect_contact }} · auto-assigned method (default {{ split.auto_method }}): <b class="ink">€{{ "{:,.0f}".format(split.auto_amount) }}</b></p>
+  {% if split.manual %}
+  <table class="students" style="margin-bottom:14px">
+    <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+      {% for m in split.manual %}
+      <tr>
+        <td class="muted small">{{ m.date }}</td>
+        <td>{{ m.category }}</td>
+        <td class="num">€{{ "{:,.0f}".format(m.amount) }}</td>
+        <td class="muted small">{{ m.note }}</td>
+        <td>
+          <form method="post" action="/admin/transactions/delete" style="display:inline">
+            <input type="hidden" name="id" value="{{ m.id }}">
+            <input type="hidden" name="period" value="{{ period }}">
+            <button type="submit" class="csv-btn" onclick="return confirm('Delete?')">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">Manual total: €{{ "{:,.0f}".format(split.manual_total) }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="block">
+  <h2>{% if preselect_contact %}Log payment for this student{% else %}Add transaction{% endif %}</h2>
+  <p class="muted small">
+    {% if preselect_contact %}Use this to record cash, bank transfer or DSP portions of this student's payment. The remainder stays under the auto-assigned default ({{ split.auto_method if split else "Stripe" }}).
+    {% else %}For anything that's not in ONtraport — cash drop-offs, corporate payments (LIFE, K67 Pillo), marketing spend, refunds via bank, etc.{% endif %}
+  </p>
+  <form method="post" action="/admin/transactions/add" class="tx-form">
+    <div class="tx-grid">
+      <label>Date<input type="date" name="date" required></label>
+      <label>Period
+        <select name="period">{% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}</select>
+      </label>
+      <label>Direction
+        <select name="direction">
+          <option value="in" selected>In (revenue)</option>
+          <option value="out">Out (expense)</option>
+        </select>
+      </label>
+      <label>Method / Category
+        <select name="category">
+          <option value="cash_dropoff">Cash</option>
+          <option value="bank_transfer">Bank Transfer</option>
+          <option value="stripe">Stripe (override)</option>
+          <option value="revolut">Revolut</option>
+          <option value="skillnet">SkillNet</option>
+          <option value="dsp">DSP / Grant</option>
+          <option value="corporate">Corporate / B2B (LIFE, K67, etc.)</option>
+          <option value="marketing">Marketing spend</option>
+          <option value="rent">Rent / venue</option>
+          <option value="salary">Salary / wages</option>
+          <option value="software">Software / tools</option>
+          <option value="refund">Refund</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Amount (€)<input type="text" name="amount" placeholder="500" required></label>
+      <label>Subcategory<input type="text" name="subcategory" placeholder="optional"></label>
+      <label>Contact ID{% if preselect_contact %} (locked){% endif %}
+        <input type="text" name="contact_id" value="{{ preselect_contact or '' }}" placeholder="Linked student" {% if preselect_contact %}readonly{% endif %}>
+      </label>
+      <label class="span-2">Note<input type="text" name="note" placeholder="e.g. cash collected at consultation"></label>
+    </div>
+    <div style="margin-top:12px;text-align:right">
+      <button type="submit" class="btn primary">{% if preselect_contact %}Log payment{% else %}Add transaction{% endif %}</button>
+    </div>
+  </form>
+</section>
+
+<section class="block">
+  <h2>Manual transactions · {{ period }}</h2>
+  <table class="students">
+    <thead><tr>
+      <th>Date</th><th>Direction</th><th>Category</th><th>Subcategory / Note</th>
+      <th>Amount</th><th>Contact</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="muted small">{{ r.date }}</td>
+        <td>
+          {% if r.direction == "in" %}<span class="status complete">In</span>
+          {% else %}<span class="status warn">Out</span>{% endif %}
+        </td>
+        <td>{{ r.category }}</td>
+        <td class="muted small">{{ r.subcategory }}{% if r.subcategory and r.note %} · {% endif %}{{ r.note }}</td>
+        <td class="num">€{{ "{:,.0f}".format(r.amount) }}</td>
+        <td class="muted small">{{ r.contact_id or "—" }}</td>
+        <td>
+          <form method="post" action="/admin/transactions/delete" style="display:inline">
+            <input type="hidden" name="id" value="{{ r.id }}">
+            <input type="hidden" name="period" value="{{ period }}">
+            <button type="submit" class="csv-btn" onclick="return confirm('Delete this entry?')">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No manual transactions yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

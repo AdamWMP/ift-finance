@@ -1,0 +1,10 @@
+*.db
+.op_*.csv
+.s26_*.json
+sync.log
+__pycache__/
+*.pyc
+.DS_Store
+.venvs/
+v2/app/ift_finance.db
+v2/tabs/

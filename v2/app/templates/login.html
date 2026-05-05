@@ -1,0 +1,14 @@
+{% extends "_base.html" %}
+{% block title %}Sign in · IFT Finance{% endblock %}
+{% block main %}
+<section class="login">
+  <h1>IFT Finance</h1>
+  <p class="muted">Enter the passphrase to continue.</p>
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <input type="password" name="passphrase" placeholder="Passphrase" autofocus required>
+    <button type="submit">Continue</button>
+    {% if error %}<p class="err">Wrong passphrase.</p>{% endif %}
+  </form>
+</section>
+{% endblock %}

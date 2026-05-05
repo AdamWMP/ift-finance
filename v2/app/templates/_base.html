@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}IFT Finance{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>
+  (function() {
+    const t = localStorage.getItem('ift-theme');
+    if (t === 'light') document.documentElement.classList.add('light');
+  })();
+</script>
+</head>
+<body class="{% if request.query_params.get('clean') == '1' %}clean{% endif %}">
+<header class="topbar">
+  <div class="brand">
+    IFT Finance
+    <nav class="navlinks">
+      <a href="/board{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
+         class="navlink {% if request.url.path == '/board' or request.url.path == '/group' or request.url.path == '/pathway' or request.url.path == '/method' or request.url.path == '/location' %}active{% endif %}">Dashboard View</a>
+      <a href="/admin/chase{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
+         class="navlink {% if request.url.path.startswith('/admin/chase') %}active{% endif %}">Debt Collection View</a>
+      <a href="/admin/work{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
+         class="navlink {% if request.url.path.startswith('/admin/work') %}active{% endif %}">Admin Work</a>
+      <a href="/admin/transactions{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
+         class="navlink {% if request.url.path.startswith('/admin/transactions') %}active{% endif %}">Transactions</a>
+    </nav>
+  </div>
+  {% block term_switcher %}{% endblock %}
+  <div class="topbar-right">
+    <button class="topbtn" id="searchBtn" title="Search (⌘K)">⌘K Search</button>
+    <button class="topbtn" id="themeBtn" title="Toggle theme">◐</button>
+    <form method="post" action="/admin/sync" class="sync-form" id="syncForm">
+      <button type="submit" class="sync-btn" title="Pull latest from ONtraport + Sales Board">
+        <span class="sync-icon">↻</span> Refresh
+      </button>
+    </form>
+  </div>
+</header>
+
+<div id="searchModal" class="modal" hidden>
+  <div class="modal-card">
+    <input id="searchInput" type="text" placeholder="Search students, groups, invoice IDs…" autofocus>
+    <div id="searchResults" class="search-results"></div>
+    <div class="search-foot muted small">↑↓ to navigate · Enter to open · Esc to close</div>
+  </div>
+</div>
+<main>{% block main %}{% endblock %}</main>
+<footer class="foot">
+  <span id="syncStatus">Source: ONtraport + IFT Sales Board · <span id="syncTime">checking…</span></span>
+</footer>
+<script src="/static/app.js"></script>
+<script>
+(function() {
+  const fmt = ts => {
+    if (!ts) return "never synced";
+    const d = new Date(ts);
+    const mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs} hr ago`;
+    return d.toLocaleString();
+  };
+  const refresh = async () => {
+    try {
+      const r = await fetch('/_meta/sync', { credentials: 'same-origin' });
+      const j = await r.json();
+      const status = document.getElementById('syncTime');
+      if (j.running) {
+        status.textContent = "syncing…";
+        document.body.classList.add('syncing');
+      } else {
+        document.body.classList.remove('syncing');
+        status.textContent = "Last sync " + fmt(j.last_sync_at);
+        if (window._wasSyncing) location.reload();
+      }
+      window._wasSyncing = j.running;
+    } catch (e) { /* ignore */ }
+  };
+  refresh();
+  setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>

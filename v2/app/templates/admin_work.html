@@ -1,0 +1,104 @@
+{% extends "_base.html" %}
+{% block title %}Admin Work · {{ period }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="location.href='/admin/work?period='+this.value">
+    {% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+<section class="hero">
+  <div class="card accent"><div class="label">Open tasks</div><div class="num">{{ summary.count }}</div></div>
+  {% for task, n in summary.by_task.items() %}
+  <div class="card"><div class="label">{{ task }}</div><div class="num">{{ n }}</div></div>
+  {% endfor %}
+</section>
+
+<section class="block">
+  <h2>To-do · {{ period }} <a class="csv-btn" href="/export.csv?table=admin_work&period={{ period }}" style="margin-left:8px">⬇ CSV</a></h2>
+  <p class="muted small">
+    Auto-generated from contact data. Tick a task once you've fixed it in ONtraport — it disappears,
+    with a 30-second undo. Tasks reappear on the next sync if the underlying issue is still there.
+  </p>
+  <div class="filterbar" data-target=".admin-work">
+    <span class="chip active" data-value="">All</span>
+    {% for task in summary.by_task.keys() %}
+    <span class="chip" data-value="{{ task }}">{{ task }}</span>
+    {% endfor %}
+  </div>
+  <table class="admin-work">
+    <thead><tr>
+      <th></th><th>Contact</th><th>Stream</th><th>Task</th><th>Detail</th><th>Group</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="{% if r.dismissed %}dismissed{% endif %}" data-undo-seconds="{{ r.undo_seconds_left or 0 }}"
+          data-filter="{{ r.task }} {{ r.stream }} {{ r.name }}">
+        <td>
+          {% if r.dismissed %}
+          <form method="post" action="/admin/work/undo" class="cert-form">
+            <input type="hidden" name="contact_id" value="{{ r.contact_id }}">
+            <input type="hidden" name="task" value="{{ r.task }}">
+            <input type="hidden" name="period" value="{{ period }}">
+            <button type="submit" class="cert-check on" title="Undo dismissal">
+              <span class="box">✓</span>
+            </button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/work/dismiss" class="cert-form">
+            <input type="hidden" name="contact_id" value="{{ r.contact_id }}">
+            <input type="hidden" name="task" value="{{ r.task }}">
+            <input type="hidden" name="period" value="{{ period }}">
+            <button type="submit" class="cert-check" title="Mark done">
+              <span class="box"></span>
+            </button>
+          </form>
+          {% endif %}
+        </td>
+        <td>
+          <div class="name">{{ r.name }}</div>
+          <div class="muted small">CID {{ r.contact_id }}</div>
+        </td>
+        <td class="muted small">{{ r.stream }}</td>
+        <td><strong>{{ r.task }}</strong></td>
+        <td class="muted small">{{ r.detail }}</td>
+        <td class="muted small">
+          {% if r.group_id %}<a href="/group?id={{ r.group_id|urlencode }}" class="muted">{{ r.group_id }}</a>{% endif %}
+        </td>
+        <td class="actions">
+          <a class="btn" href="{{ r.url }}" target="_blank" rel="noopener">Open in ONtraport</a>
+          {% if r.dismissed %}
+          <span class="undo-countdown muted small" data-seconds="{{ r.undo_seconds_left or 0 }}">undo {{ r.undo_seconds_left or 0 }}s</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No admin work outstanding 🎉</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script>
+// Live countdown for the 30s undo windows; auto-refresh when they all expire.
+(function () {
+  const els = document.querySelectorAll('.undo-countdown');
+  if (!els.length) return;
+  const tick = () => {
+    let any = false;
+    els.forEach(el => {
+      const left = parseInt(el.dataset.seconds, 10) - 1;
+      el.dataset.seconds = left;
+      el.textContent = `undo ${Math.max(0, left)}s`;
+      if (left > 0) any = true;
+    });
+    if (!any) setTimeout(() => location.reload(), 800);
+  };
+  setInterval(tick, 1000);
+})();
+</script>
+{% endblock %}

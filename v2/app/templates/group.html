@@ -1,0 +1,152 @@
+{% extends "_base.html" %}
+{% block title %}{{ g.label }}{% endblock %}
+
+{% block term_switcher %}
+<a class="back" href="/board?period={{ g.period }}" onclick="if(document.referrer && document.referrer !== location.href){history.back();return false}">← Back</a>
+{% endblock %}
+
+{% block main %}
+<section class="group-head">
+  <h1>{{ g.label }}</h1>
+  <div class="muted small">
+    {{ g.stream }}
+    {% if g.timetable %} · {{ g.timetable }}{% endif %}
+    · {{ g.n }} students
+    <span class="dim"> · slug:&nbsp;<code>{{ g.group_id }}</code></span>
+  </div>
+</section>
+
+<section class="hero">
+  <div class="card"><div class="label">Expected</div><div class="num">€{{ "{:,.0f}".format(g.expected) }}</div></div>
+  <div class="card"><div class="label">Collected</div><div class="num">€{{ "{:,.0f}".format(g.collected) }}</div></div>
+  <div class="card"><div class="label">Outstanding</div><div class="num">€{{ "{:,.0f}".format(g.outstanding) }}</div></div>
+  <div class="card accent"><div class="label">% Collected</div><div class="num">{{ "{:.0f}".format(g.pct) }}%</div></div>
+</section>
+
+<section class="block">
+  <div class="counts">
+    <span class="pill paid">Paid · {{ g.counts.paid }}</span>
+    <span class="pill cert">Cert-ready · {{ g.counts.cert_ready }}</span>
+    <span class="pill prog">In progress · {{ g.counts.in_progress }}</span>
+    <span class="pill unpaid">Unpaid · {{ g.counts.unpaid }}</span>
+    <span class="pill issued">Cert issued · {{ g.counts.cert_issued }}</span>
+  </div>
+</section>
+
+{% if forecast %}
+<section class="forecast">
+  <div class="hd">Cohort forecast</div>
+  <div class="b">{{ forecast.summary }}</div>
+</section>
+{% endif %}
+
+{% if chase %}
+<section class="block">
+  <h2>Debt collection — this group</h2>
+  <div class="muted small" style="margin-bottom:8px">
+    {{ chase|length }} invoice{{ "s" if chase|length != 1 }} outstanding · €{{ "{:,.0f}".format(chase_total) }} to chase
+  </div>
+  <table class="chase">
+    <thead><tr><th>Contact</th><th>Status</th><th>Balance</th><th>Last try</th><th>Attempts</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for c in chase %}
+      <tr>
+        <td>
+          <div class="name">{{ c.name }}</div>
+          <div class="muted small">CID {{ c.contact_id }} · invoice #{{ c.invoice_id }}</div>
+        </td>
+        <td>
+          {% if c.status_code == 0 %}<span class="status behind">Collections</span>
+          {% else %}<span class="status warn">Declined</span>{% endif %}
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(c.balance) }}</td>
+        <td class="muted small">{{ c.last_recharge_date or "-" }}</td>
+        <td class="num">{{ c.recharge_attempts or 0 }}</td>
+        <td class="actions">
+          <a class="btn" href="{{ c.ontraport_invoice_url }}" target="_blank" rel="noopener">Open in ONtraport</a>
+          {% if c.whatsapp_url %}
+          <a class="btn primary" href="{{ c.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="block">
+  <h2>Students</h2>
+  <table class="students">
+    <thead><tr>
+      <th>Name</th><th>Qualification</th>
+      <th>Cert progress</th>
+      <th>Paid / Price</th>
+      <th>Plan</th>
+      <th>Status</th><th>Payments</th>
+      <th>Cert issued</th>
+      <th>Note</th>
+      <th></th>
+    </tr></thead>
+    <tbody>
+      {% for s in g.students %}
+      <tr class="{% if s.is_deferral %}deferral{% endif %} {% if s.payment_status in ['collections','declined'] %}row-warn{% endif %}">
+        <td>
+          <div class="name">{{ s.name }}{% if s.is_deferral %} <span class="badge mini">deferral</span>{% endif %}</div>
+          <div class="muted small contact-line">
+            {% if s.email %}<span title="{{ s.email }}">✉ {{ s.email|truncate(28, true) }}</span>{% endif %}
+            {% if s.phone %}<span title="{{ s.phone }}">📞 {{ s.phone }}</span>{% endif %}
+          </div>
+        </td>
+        <td class="muted small">{{ s.qualification or "—" }}</td>
+        <td>
+          {% set pct = s.pct if s.pct <= 100 else 100 %}
+          <div class="cert-bar"
+               title="{{ '{:.0f}'.format(s.pct) }}% paid · cert-ready at 50%">
+            <div class="cert-fill {% if pct >= 100 %}done{% elif pct >= 50 %}ready{% endif %}" style="width:{{ pct }}%"></div>
+            <div class="cert-tick" style="left:50%"></div>
+          </div>
+          <div class="muted small" style="margin-top:4px">{{ "{:.0f}".format(s.pct) }}% paid</div>
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(s.spent) }} <span class="muted">/ €{{ "{:,.0f}".format(s.price) }}</span></td>
+        <td class="muted small" title="{{ s.payment_plan or '' }}">{{ s.plan_short or "—" }}</td>
+        <td>
+          {% if s.status == "paid" %}<span class="status complete">Paid</span>
+          {% elif s.status == "cert-ready" %}<span class="status cert">Cert-ready</span>
+          {% elif s.status == "in-progress" %}<span class="status ok">In progress</span>
+          {% else %}<span class="status behind">Unpaid</span>{% endif %}
+        </td>
+        <td>
+          {% if s.payment_status == "collections" %}<span class="status behind">Collections</span>
+          {% elif s.payment_status == "declined" %}<span class="status warn">Declined</span>
+          {% elif s.payment_status == "partial" %}<span class="status ok">Partial</span>
+          {% else %}<span class="muted small">—</span>{% endif %}
+        </td>
+        <td>
+          <form method="post" action="/group/cert-toggle" class="cert-form">
+            <input type="hidden" name="contact_id" value="{{ s.contact_id }}">
+            <input type="hidden" name="stream" value="{{ s.stream }}">
+            <input type="hidden" name="group_id" value="{{ g.group_id }}">
+            <button type="submit" class="cert-check {% if s.cert_issued %}on{% endif %}" title="{% if s.cert_issued %}Issued {{ s.cert_issued_at or '' }}{% else %}Mark cert as issued{% endif %}">
+              <span class="box">{% if s.cert_issued %}✓{% endif %}</span>
+              <span class="muted small">{% if s.cert_issued %}Issued{% else %}Mark{% endif %}</span>
+            </button>
+          </form>
+        </td>
+        <td class="note-cell">
+          <span class="note-icon {% if s.note %}has{% endif %}" data-cid="{{ s.contact_id }}" data-stream="{{ s.stream }}" title="{{ s.note or 'Add note' }}">📝</span>
+        </td>
+        <td>
+          <a class="btn" href="/admin/transactions?contact={{ s.contact_id }}&name={{ (s.name or '')|urlencode }}&period={{ g.period }}" title="Log a cash / bank transfer / DSP payment for this student">💳</a>
+          <a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block" style="text-align:right">
+  <a class="csv-btn" href="/export.csv?table=group&group_id={{ g.group_id|urlencode }}">⬇ Export student list (CSV)</a>
+</section>
+{% endblock %}

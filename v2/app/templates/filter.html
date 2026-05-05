@@ -1,0 +1,79 @@
+{% extends "_base.html" %}
+{% block title %}{{ f.title }}{% endblock %}
+
+{% block term_switcher %}
+<a class="back" href="/board?period={{ f.period }}" onclick="if(document.referrer && document.referrer !== location.href){history.back();return false}">← Back</a>
+{% endblock %}
+
+{% block main %}
+<section class="group-head">
+  <h1>{{ f.filter_value or "All students" }}</h1>
+  <div class="muted small">{{ f.title }} · {{ f.n }} students</div>
+</section>
+
+<section class="hero">
+  <div class="card"><div class="label">Expected</div><div class="num">€{{ "{:,.0f}".format(f.expected) }}</div></div>
+  <div class="card"><div class="label">Collected</div><div class="num">€{{ "{:,.0f}".format(f.collected) }}</div></div>
+  <div class="card"><div class="label">Outstanding</div><div class="num">€{{ "{:,.0f}".format(f.outstanding) }}</div></div>
+  <div class="card accent"><div class="label">% Collected</div><div class="num">{{ "{:.0f}".format(f.pct) }}%</div></div>
+</section>
+
+<section class="block">
+  <div class="counts">
+    <span class="pill paid">Paid · {{ f.counts.paid }}</span>
+    <span class="pill cert">Cert-ready · {{ f.counts.cert_ready }}</span>
+    <span class="pill prog">In progress · {{ f.counts.in_progress }}</span>
+    <span class="pill unpaid">Unpaid · {{ f.counts.unpaid }}</span>
+    <span class="pill issued">Cert issued · {{ f.counts.cert_issued }}</span>
+  </div>
+</section>
+
+<section class="block">
+  <h2>Students</h2>
+  <table class="students">
+    <thead><tr>
+      <th>Name</th><th>Group</th>
+      <th>Cert progress</th>
+      <th>Paid / Price</th>
+      <th>Plan</th>
+      <th>Method</th>
+      <th>Status</th><th>Payments</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for s in f.students %}
+      <tr class="{% if s.payment_status in ['collections','declined'] %}row-warn{% endif %}">
+        <td>
+          <div class="name">{{ s.name }}</div>
+          <div class="muted small contact-line">
+            {% if s.email %}<span title="{{ s.email }}">✉ {{ s.email|truncate(28, true) }}</span>{% endif %}
+            {% if s.phone %}<span title="{{ s.phone }}">📞 {{ s.phone }}</span>{% endif %}
+          </div>
+        </td>
+        <td><a class="muted" href="/group?id={{ s.group_id|urlencode }}">{{ s.group_label }}</a></td>
+        <td>
+          {% set pct = s.pct if s.pct <= 100 else 100 %}
+          <div class="cert-bar"><div class="cert-fill {% if pct >= 100 %}done{% elif pct >= 50 %}ready{% endif %}" style="width:{{ pct }}%"></div><div class="cert-tick" style="left:50%"></div></div>
+          <div class="muted small" style="margin-top:4px">{{ "{:.0f}".format(s.pct) }}% paid</div>
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(s.spent) }} <span class="muted">/ €{{ "{:,.0f}".format(s.price) }}</span></td>
+        <td class="muted small" title="{{ s.payment_plan or '' }}">{{ s.plan_short or "—" }}</td>
+        <td class="muted small">{{ s.payment_method or "—" }}</td>
+        <td>
+          {% if s.status == "paid" %}<span class="status complete">Paid</span>
+          {% elif s.status == "cert-ready" %}<span class="status cert">Cert-ready</span>
+          {% elif s.status == "in-progress" %}<span class="status ok">In progress</span>
+          {% else %}<span class="status behind">Unpaid</span>{% endif %}
+        </td>
+        <td>
+          {% if s.payment_status == "collections" %}<span class="status behind">Collections</span>
+          {% elif s.payment_status == "declined" %}<span class="status warn">Declined</span>
+          {% elif s.payment_status == "partial" %}<span class="status ok">Partial</span>
+          {% else %}<span class="muted small">—</span>{% endif %}
+        </td>
+        <td><a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

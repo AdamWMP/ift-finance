@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ift-finance",
+      "runtimeExecutable": "/Users/adamward/.venvs/ift-finance/bin/uvicorn",
+      "runtimeArgs": ["app.main:app", "--host", "127.0.0.1", "--port", "8765"],
+      "port": 8765,
+      "env": {
+        "IFT_SALES_BOARD_URL": "https://script.google.com/macros/s/AKfycbzO13g9uLaLKAdkER4MiDUtXpllyrTJ4Z1jWA2ISXoKnriAzPcR83PtzPwfYcdkUpBY/exec",
+        "IFT_SALES_BOARD_TOKEN": "newminds123"
+      }
+    }
+  ]
+}

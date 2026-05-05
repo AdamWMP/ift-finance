@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% block title %}Chase · {{ period }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="location.href='/admin/chase?period='+this.value">
+    {% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+<section class="hero">
+  <div class="card"><div class="label">Invoices to chase</div><div class="num">{{ summary.count }}</div></div>
+  <div class="card accent"><div class="label">Total balance</div><div class="num">€{{ "{:,.0f}".format(summary.total_balance) }}</div></div>
+  <div class="card"><div class="label">Collections</div><div class="num">{{ summary.by_status.Collections }}</div></div>
+  <div class="card"><div class="label">Declined</div><div class="num">{{ summary.by_status.Declined }}</div></div>
+</section>
+
+<section class="block">
+  <h2>Chase list — {{ period }} <a class="csv-btn" href="/export.csv?table=chase&period={{ period }}" style="margin-left:8px">⬇ CSV</a></h2>
+  <p class="muted small">
+    Click <b>Open in ONtraport</b> to grab the pay-link, then <b>WhatsApp</b> to send it.
+    Once your ONtraport rule populates the contact's "Last Invoice Pay URL" field, this will become one-click.
+    <span class="dim"> · Press <code>j/k</code> to navigate, <code>Enter</code> to open, <code>w</code> for WhatsApp.</span>
+  </p>
+  <div class="filterbar" data-target=".chase">
+    <span class="chip active" data-value="">All</span>
+    <span class="chip" data-value="Collections">Collections</span>
+    <span class="chip" data-value="Declined">Declined</span>
+    <span class="chip" data-value="PT">PT</span>
+    <span class="chip" data-value="Pilates">Pilates</span>
+  </div>
+  <table class="chase kb-table">
+    <thead><tr>
+      <th>Contact</th><th>Stream</th><th>Status</th><th>Balance</th>
+      <th>Outstanding invoices</th><th>Last try</th><th>Max attempts</th><th>Actions</th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-href="{{ r.ontraport_invoice_url }}" data-whatsapp="{{ r.whatsapp_url }}"
+          data-filter="{{ r.status }} {{ r.stream or '' }} {{ r.location or '' }} {{ r.name }}">
+        <td>
+          <div class="name">{{ r.name }}</div>
+          <div class="muted small">CID {{ r.contact_id }}</div>
+        </td>
+        <td>{{ r.stream or "-" }}<div class="muted small">{{ r.location or "" }}</div></td>
+        <td>
+          {% if r.status_code == 0 %}<span class="status behind">Collections</span>
+          {% else %}<span class="status warn">Declined</span>{% endif %}
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(r.balance) }}</td>
+        <td class="num">{{ r.invoice_count }}</td>
+        <td class="muted small">{{ r.last_recharge_date or "-" }}</td>
+        <td class="num">{{ r.recharge_attempts or 0 }}</td>
+        <td class="actions">
+          <a class="btn" href="{{ r.ontraport_invoice_url }}" target="_blank" rel="noopener">Open in ONtraport</a>
+          {% if r.whatsapp_url %}
+          <a class="btn primary" href="{{ r.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+          {% else %}
+          <span class="muted small">no phone</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nothing to chase 🎉</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
