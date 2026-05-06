@@ -179,6 +179,10 @@ export IFT_SALES_BOARD_TOKEN='newminds123'
 - [ ] **Student profile page** at `/contact?id=` (full history per student)
 - [ ] **Bulk actions** in tables (multi-select → action toolbar)
 - [ ] **P&L view** — combine revenue (ONtraport + Sales Board) − manual transaction expenses
+- [ ] **Drill into non-PT/Pilates groups** — Reformer Pilates, S&C, Advanced Programming, FBA, NutriCert
+  etc. currently only show as aggregate revenue from Sales Board. Need a per-student view for these:
+  read the Sales Board's per-student listings (rows 22+ of the S26 tab) into the dashboard so each can
+  drill into their own students table just like PT cohorts do.
 
 ### Phase 4 — historical backfill (S25 + A25 + term-over-term)
 - [ ] **Backfill S25 + A25 contacts** — discovery currently filters PT 2026 / Pilates 2026 / Reformer 2026.
@@ -191,6 +195,18 @@ export IFT_SALES_BOARD_TOKEN='newminds123'
   deltas (`S26 vs S25 → +12% revenue, +8% sales, –3pp collection rate`). Backend `compare_periods()` ready.
 - [ ] **Year-over-year card on hero** — once at least one prior comparable term has data, show
   "vs S25 same week-of-term" sparkline + delta on the headline metrics.
+
+### Phase 4 polish
+- [ ] **Export class group as attendance template (CSV/PDF)** — "Download attendance sheet" on each
+  group page. Generates a printable / editable template tutors can fill out per session. Same student
+  list, plus blank columns for week-by-week attendance ticks.
+
+### Phase 5 — education data
+- [ ] **Attendance + progress tracking on class groups** — wire up education data alongside finance:
+  attendance per session, assignments handed in, exam scores, cert-ready (already tracked by us) +
+  cert-issued (already tracked). Whether this lives in ONtraport or a new module TBD.
+- [ ] **Student progress timeline** — on student profile, show a unified timeline:
+  enrolled → first payment → cert-ready (50%) → final payment → cert-issued, plus attendance dots.
 
 ### Stretch
 - [ ] Real-time new-sale notifications (ONtraport webhook → dashboard → optional Slack)
