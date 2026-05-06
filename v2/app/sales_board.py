@@ -88,12 +88,11 @@ def write_transactions(period: str = "S26") -> int:
     return n
 
 def push_live_money_in(period: str = "S26", cell: str = "L18") -> dict:
-    """Compute total collected for the period (raw_students + sales_board
-    transactions), divide by SALE_VALUE, and write the result to the Sales
-    Board cell."""
+    """Compute total collected for the period and write the sales-equivalent
+    to the Sales Board cell. macro.collected already includes the Sales
+    Board categories — DO NOT add them again or you'll double-count."""
     macro = queries.macro(period)
-    extra = sum(it["amount"] for it in extract(period) if it["amount"] > 0)
-    total_collected = (macro["collected"] or 0) + extra
+    total_collected = macro["collected"] or 0
     sales_eq = round(total_collected / SALE_VALUE, 4)
     if not URL or not TOKEN:
         raise RuntimeError("IFT_SALES_BOARD_URL / IFT_SALES_BOARD_TOKEN missing")

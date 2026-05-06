@@ -131,10 +131,10 @@ IFT_DIGEST_HOUR_UTC   = 8                ← 09:00 Dublin BST (or "8:30" for 9:3
 
 🔧 **Custom domain `finance.imageft.ie` deferred** — user said leave for now. Production runs on `https://ift-finance.onrender.com` directly. Pick up later: Render → ift-finance → Settings → Custom Domains → Add → CNAME `finance` → `ift-finance.onrender.com`.
 
-🔧 **L18 push to Apps Script — fix in progress.** The bug: Render's outbound proxy strips POST body across the Apps Script 302 redirect. Fix shipped:
-   - `sales_board.gs` now accepts `?action=write&cell=L18&value=N&token=...` via doGet (GET survives the redirect cleanly).
-   - `sales_board.py` switched the primary path from POST to GET.
-   - **User must redeploy the Apps Script** (paste latest `sales_board.gs` into the editor → Deploy → Manage deployments → edit → New version → Deploy).
+✅ **L18 push working end-to-end.** Two fixes shipped:
+   - GET-with-action=write replaces POST (Render's proxy stripped POST bodies across Apps Script's 302 redirect)
+   - `push_live_money_in` no longer double-counts sales-board categories (macro.collected already includes them)
+   - Apps Script redeployed under URL `AKfycbwqzfithk5...` — env var `IFT_SALES_BOARD_URL` on Render must match.
 
 ✅ **`Last Invoice Pay URL` ONtraport rule not yet set up.** When done, the chase view's WhatsApp button auto-includes the pay link. ~5 min in ONtraport's campaign builder. Field exists in Contact (`f2624`), just empty.
 
