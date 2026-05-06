@@ -97,28 +97,21 @@ def push_live_money_in(period: str = "S26", cell: str = "L18") -> dict:
     sales_eq = round(total_collected / SALE_VALUE, 4)
     if not URL or not TOKEN:
         raise RuntimeError("IFT_SALES_BOARD_URL / IFT_SALES_BOARD_TOKEN missing")
-    # Apps Script web apps issue a 302 redirect from script.google.com to
-    # script.googleusercontent.com that some networks (including Render) can
-    # strip the POST body on. Fall back to a signed GET call if POST returns
-    # no JSON body.
-    body = {"token": TOKEN, "period": period, "cell": cell, "value": sales_eq}
+    # GET-with-action=write is the primary path. Apps Script web apps issue
+    # a 302 redirect from script.google.com to script.googleusercontent.com
+    # that some networks (Render's outbound proxy) strip POST bodies across.
+    # GET query params survive redirects cleanly.
+    body = {"token": TOKEN, "period": period, "cell": cell,
+            "value": sales_eq, "action": "write"}
     try:
-        r = requests.post(URL, json=body, timeout=30, allow_redirects=True)
+        r = requests.get(URL, params=body, timeout=30)
         r.raise_for_status()
         out = r.json()
-    except (requests.exceptions.JSONDecodeError, ValueError):
-        # Fallback: send the same payload as a GET — Apps Script's doGet was
-        # extended in a later patch to accept write requests too. If that
-        # endpoint isn't there, log + continue without throwing.
-        try:
-            r = requests.get(URL, params={**body, "action": "write"}, timeout=30)
-            r.raise_for_status()
-            out = r.json() if r.text and r.text.strip().startswith("{") else {
-                "ok": False, "warning": "L18 push got empty response from Apps Script",
-                "preview": (r.text or "")[:200],
-            }
-        except Exception as e:
-            out = {"ok": False, "warning": f"L18 push failed: {e}"}
+    except (requests.exceptions.JSONDecodeError, ValueError) as e:
+        out = {"ok": False, "warning": f"L18 push got non-JSON response: {e}",
+               "preview": (r.text or "")[:200] if 'r' in locals() else ""}
+    except Exception as e:
+        out = {"ok": False, "warning": f"L18 push failed: {e}"}
     out["_input"] = {"collected": total_collected, "sale_value": SALE_VALUE,
                      "sales_eq": sales_eq, "cell": cell}
     return out

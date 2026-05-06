@@ -18,6 +18,23 @@ function doGet(e) {
   const sheet = ss.getSheetByName(period);
   if (!sheet) return jsonResponse({ error: 'tab_not_found', period: period });
 
+  // GET-style write fallback — POST + JSON body gets stripped on some
+  // networks (Render's outbound proxy strips the body across the Apps
+  // Script 302 redirect). Allowing writes via GET query params is the
+  // robust workaround.
+  if (e.parameter.action === 'write') {
+    const cell = (e.parameter.cell || '').trim();
+    const value = e.parameter.value;
+    if (!cell || value === undefined) return jsonResponse({ error: 'missing_cell_or_value' });
+    try {
+      const num = Number(value);
+      sheet.getRange(cell).setValue(isFinite(num) ? num : value);
+    } catch (err) {
+      return jsonResponse({ error: 'write_failed', detail: String(err) });
+    }
+    return jsonResponse({ ok: true, period: period, cell: cell, value: value });
+  }
+
   const grid = sheet.getDataRange().getValues();
   if (!grid.length) return jsonResponse({ rows: [], grid: [] });
 

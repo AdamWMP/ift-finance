@@ -129,13 +129,16 @@ IFT_DIGEST_HOUR_UTC   = 8                ← 09:00 Dublin BST (or "8:30" for 9:3
 
 ## Known issues / loose ends
 
-🔧 **Custom domain `finance.imageft.ie` not yet configured.** Need to add the CNAME at the registrar pointing at `ift-finance.onrender.com`. Render auto-provisions TLS once DNS resolves.
+🔧 **Custom domain `finance.imageft.ie` deferred** — user said leave for now. Production runs on `https://ift-finance.onrender.com` directly. Pick up later: Render → ift-finance → Settings → Custom Domains → Add → CNAME `finance` → `ift-finance.onrender.com`.
 
-🔧 **L18 push to Apps Script gets `JSONDecodeError` on Render.** Apps Script returns empty body on POST through Render's network (works locally). I added a graceful fallback that logs a warning and continues — sheet stays at last value, dashboard data unaffected. Real fix is to extend `doGet` in the Apps Script with a write mode and call that instead.
+🔧 **L18 push to Apps Script — fix in progress.** The bug: Render's outbound proxy strips POST body across the Apps Script 302 redirect. Fix shipped:
+   - `sales_board.gs` now accepts `?action=write&cell=L18&value=N&token=...` via doGet (GET survives the redirect cleanly).
+   - `sales_board.py` switched the primary path from POST to GET.
+   - **User must redeploy the Apps Script** (paste latest `sales_board.gs` into the editor → Deploy → Manage deployments → edit → New version → Deploy).
 
-🔧 **`Last Invoice Pay URL` ONtraport rule not yet set up.** When done, the chase view's WhatsApp button auto-includes the pay link. ~5 min in ONtraport's campaign builder. See "Path B" in earlier work.
+✅ **`Last Invoice Pay URL` ONtraport rule not yet set up.** When done, the chase view's WhatsApp button auto-includes the pay link. ~5 min in ONtraport's campaign builder. Field exists in Contact (`f2624`), just empty.
 
-🔧 **Daily digest email not yet verified end-to-end.** Setting `IFT_DIGEST_HOUR_UTC=5:30` to test triggered a deploy failure because old code did `int("5:30")`. Fix shipped: now accepts `"H"` or `"H:MM"`.
+✅ **Daily digest email confirmed working end-to-end.** SMTP fixed (Gmail required app-specific password — was using regular pass). New app password set in Render env var `IFT_SMTP_PASS`. Manual trigger at `POST /admin/digest/send-now` works; tolerant scheduler fires daily at `IFT_DIGEST_HOUR_UTC` (Mon-Fri).
 
 🔧 **No A26 data yet** in the db. Term comparison UI not built — backend `compare_periods()` is ready.
 
