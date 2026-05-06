@@ -7,10 +7,18 @@ from pathlib import Path
 
 from .db import DATA_DIR, DB_PATH, get_db, init_db, parse_date, period_for, pathway_for, normalize_location
 
-# In dev, read the legacy CSV from the original Finance/ folder; in prod it
-# lives next to the DB under DATA_DIR.
+# Resolve path at CALL TIME — refresh_s26_csv writes the CSV to DATA_DIR
+# every sync, but on a fresh prod disk that file doesn't exist when this
+# module loads. Always prefer DATA_DIR; fall back to the v1 legacy path
+# only for local dev.
 _LEGACY_CSV = Path(__file__).resolve().parent.parent.parent / ".op_live_s26.csv"
-LIVE_CSV = (DATA_DIR / ".op_live_s26.csv") if (DATA_DIR / ".op_live_s26.csv").exists() else _LEGACY_CSV
+
+def _live_csv() -> Path:
+    p = DATA_DIR / ".op_live_s26.csv"
+    return p if p.exists() else _LEGACY_CSV
+
+# Kept for backwards compat with anyone importing LIVE_CSV directly
+LIVE_CSV = DATA_DIR / ".op_live_s26.csv"
 
 # Reformer is intentionally pulled from the Sales Board (H22) only — ONtraport
 # rollups for it are unreliable, and the Sales Board is the agreed source of
@@ -47,11 +55,12 @@ def group_id(stream: str, location: str, start: str) -> str:
 
 def ingest_csv():
     init_db()
-    if not LIVE_CSV.exists():
-        print(f"!! {LIVE_CSV} not found"); return
+    csv_path = _live_csv()
+    if not csv_path.exists():
+        print(f"!! {csv_path} not found"); return
 
-    rows = list(csv.DictReader(LIVE_CSV.open()))
-    print(f"loaded {len(rows)} students from {LIVE_CSV.name}")
+    rows = list(csv.DictReader(csv_path.open()))
+    print(f"loaded {len(rows)} students from {csv_path}")
 
     with get_db() as c:
         c.execute("DELETE FROM students")
