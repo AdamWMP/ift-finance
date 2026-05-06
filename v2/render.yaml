@@ -1,11 +1,9 @@
 # Render blueprint for IFT Finance.
-# After connecting the GitHub repo, Render reads this file and provisions
-# everything in one click. See DEPLOY.md for the full walk-through.
-
-databases: []  # SQLite on a persistent disk — no managed DB needed
+# Single web service — sync + daily digest run as background threads inside
+# the same process so they share the SQLite disk. Render cron jobs can't
+# mount disks, so we don't use them.
 
 services:
-  # ── 1. The web dashboard ────────────────────────────────────────────────
   - type: web
     name: ift-finance
     runtime: docker
@@ -43,73 +41,9 @@ services:
         value: adam@imageft.ie
       - key: IFT_DASHBOARD_URL
         value: https://finance.imageft.ie
-
-  # ── 2. Sync cron — every 10 minutes pulls fresh data ────────────────────
-  - type: cron
-    name: ift-finance-sync
-    runtime: docker
-    plan: starter
-    dockerfilePath: ./v2/Dockerfile
-    dockerContext: ./v2
-    schedule: "*/10 * * * *"
-    dockerCommand: python -m app.sync
-    disk:
-      name: ift-finance-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: DATA_DIR
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: OP_APP_ID
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: OP_API_KEY
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_SALES_BOARD_URL
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_SALES_BOARD_TOKEN
-
-  # ── 3. Daily digest email — Mon-Fri at 09:00 Dublin time ────────────────
-  - type: cron
-    name: ift-finance-digest
-    runtime: docker
-    plan: starter
-    dockerfilePath: ./v2/Dockerfile
-    dockerContext: ./v2
-    schedule: "0 9 * * 1-5"  # Mon-Fri 09:00 UTC (Dublin = UTC+0/1)
-    dockerCommand: python -m app.digest S26
-    disk:
-      name: ift-finance-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: DATA_DIR
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_SMTP_USER
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_SMTP_PASS
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_DIGEST_TO
-      - fromService:
-          type: web
-          name: ift-finance
-          envVarKey: IFT_DASHBOARD_URL
+      - key: IFT_SCHEDULER
+        value: "1"
+      - key: IFT_SYNC_INTERVAL_SEC
+        value: "600"           # 10 minutes
+      - key: IFT_DIGEST_HOUR_UTC
+        value: "8"             # 09:00 Dublin (winter) / 10:00 (summer)

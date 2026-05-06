@@ -24,6 +24,11 @@ from .db import init_db, get_meta, set_meta
 HERE = Path(__file__).resolve().parent
 init_db()  # ensure all tables exist before serving traffic
 app = FastAPI(title="IFT Finance")
+
+@app.on_event("startup")
+def _start_scheduler():
+    from .scheduler import start_in_background
+    start_in_background()
 app.mount("/static", StaticFiles(directory=HERE/"static"), name="static")
 templates = Jinja2Templates(directory=HERE/"templates")
 
