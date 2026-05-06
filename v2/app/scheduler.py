@@ -42,10 +42,12 @@ def _maybe_run_digest():
     global _last_digest_date
     now = datetime.now(timezone.utc)
     if DIGEST_WEEKDAYS_ONLY and now.weekday() >= 5: return
-    # Match HH:MM with a 1-minute tolerance window (loop ticks every 60s)
-    if not (now.hour == DIGEST_HOUR_UTC and now.minute == DIGEST_MIN_UTC): return
     today_iso = now.date().isoformat()
     if _last_digest_date == today_iso: return  # already sent today
+    # Fire any time on/after the scheduled HH:MM (catches the case where the
+    # scheduler thread slept through the exact minute due to a deploy or sync).
+    target = now.replace(hour=DIGEST_HOUR_UTC, minute=DIGEST_MIN_UTC, second=0, microsecond=0)
+    if now < target: return
     print("[scheduler] running daily digest …", flush=True)
     try:
         from .digest import send_digest

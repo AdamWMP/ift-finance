@@ -121,6 +121,17 @@ def _run_sync_threaded():
     finally:
         set_meta("sync_running", "0")
 
+@app.post("/admin/digest/send-now")
+def admin_digest_send_now():
+    """Manual trigger for the daily digest — sends immediately and returns."""
+    try:
+        from .digest import send_digest
+        ok = send_digest("S26")
+        return {"ok": bool(ok)}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
 @app.post("/admin/sync")
 def admin_sync_now(request: Request):
     val, _ = get_meta("sync_running")
