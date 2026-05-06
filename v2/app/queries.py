@@ -295,7 +295,12 @@ def manual_transactions_summary(period: str | None = None) -> dict:
         by_cat[key] = by_cat.get(key, 0) + r["amount"]
     return {"count": len(rows), "in": in_total, "out": out_total, "by_cat": by_cat}
 
-def _sales_board_by_category(period: str) -> dict[str, float]:
+# Categories that overlap with raw_students (Pilates / PT) — counted there
+# already, so MUST NOT be re-added to macro.collected. They still appear in
+# the per-stream / per-method breakdowns for visibility, just not in totals.
+OVERLAPPING_SB_CATEGORIES = {"online_pilates", "tesg_grants", "iftg_global"}
+
+def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -> dict[str, float]:
     with get_db() as c:
         rs = c.execute("""
             SELECT category, COALESCE(SUM(amount),0) AS amt
@@ -303,7 +308,10 @@ def _sales_board_by_category(period: str) -> dict[str, float]:
             WHERE period=? AND direction='in' AND source='sales_board'
             GROUP BY category
         """, (period,)).fetchall()
-    return {r["category"]: r["amt"] or 0 for r in rs}
+    out = {r["category"]: r["amt"] or 0 for r in rs}
+    if exclude_overlapping:
+        out = {k: v for k, v in out.items() if k not in OVERLAPPING_SB_CATEGORIES}
+    return out
 
 def macro(period: str) -> dict:
     with get_db() as c:

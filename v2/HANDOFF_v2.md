@@ -131,9 +131,10 @@ IFT_DIGEST_HOUR_UTC   = 8                ← 09:00 Dublin BST (or "8:30" for 9:3
 
 🔧 **Custom domain `finance.imageft.ie` deferred** — user said leave for now. Production runs on `https://ift-finance.onrender.com` directly. Pick up later: Render → ift-finance → Settings → Custom Domains → Add → CNAME `finance` → `ift-finance.onrender.com`.
 
-✅ **L18 push working end-to-end.** Two fixes shipped:
+✅ **L18 push working end-to-end.** Three fixes shipped:
    - GET-with-action=write replaces POST (Render's proxy stripped POST bodies across Apps Script's 302 redirect)
    - `push_live_money_in` no longer double-counts sales-board categories (macro.collected already includes them)
+   - **Sales-board categories that overlap with raw_students excluded from macro** — `online_pilates`, `tesg_grants`, `iftg_global` are payments to students already in raw_students with their `spent` value, so they're not added to macro.collected. Listed in `OVERLAPPING_SB_CATEGORIES` in `queries.py`. Confirmed against user's formula `=SUM(B20,D20,I19,J19,H22,I22,J22,K22) = €41,080.43`.
    - Apps Script redeployed under URL `AKfycbwqzfithk5...` — env var `IFT_SALES_BOARD_URL` on Render must match.
 
 ✅ **`Last Invoice Pay URL` ONtraport rule not yet set up.** When done, the chase view's WhatsApp button auto-includes the pay link. ~5 min in ONtraport's campaign builder. Field exists in Contact (`f2624`), just empty.
