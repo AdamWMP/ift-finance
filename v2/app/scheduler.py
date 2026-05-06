@@ -27,7 +27,17 @@ DIGEST_HOUR_UTC, DIGEST_MIN_UTC = _parse_hour(os.environ.get("IFT_DIGEST_HOUR_UT
 DIGEST_WEEKDAYS_ONLY = os.environ.get("IFT_DIGEST_WEEKDAYS_ONLY", "1") == "1"
 
 _started = False
-_last_digest_date: str | None = None
+
+def _digest_already_sent_today() -> bool:
+    """Persistent dedup — survives Render redeploys (was previously in-memory
+    only, which fired the digest on every restart)."""
+    from .db import get_meta
+    val, _ = get_meta("last_digest_date")
+    return val == datetime.now(timezone.utc).date().isoformat()
+
+def _mark_digest_sent() -> None:
+    from .db import set_meta
+    set_meta("last_digest_date", datetime.now(timezone.utc).date().isoformat())
 
 def _run_sync():
     print("[scheduler] running sync …", flush=True)
@@ -39,11 +49,9 @@ def _run_sync():
         traceback.print_exc()
 
 def _maybe_run_digest():
-    global _last_digest_date
     now = datetime.now(timezone.utc)
     if DIGEST_WEEKDAYS_ONLY and now.weekday() >= 5: return
-    today_iso = now.date().isoformat()
-    if _last_digest_date == today_iso: return  # already sent today
+    if _digest_already_sent_today(): return  # persistent across restarts
     # Fire any time on/after the scheduled HH:MM (catches the case where the
     # scheduler thread slept through the exact minute due to a deploy or sync).
     target = now.replace(hour=DIGEST_HOUR_UTC, minute=DIGEST_MIN_UTC, second=0, microsecond=0)
@@ -52,7 +60,7 @@ def _maybe_run_digest():
     try:
         from .digest import send_digest
         send_digest("S26")
-        _last_digest_date = today_iso
+        _mark_digest_sent()
     except Exception:
         print("[scheduler] digest failed", flush=True)
         traceback.print_exc()
