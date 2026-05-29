@@ -148,5 +148,7 @@
 
 <section class="block" style="text-align:right">
   <a class="csv-btn" href="/export.csv?table=group&group_id={{ g.group_id|urlencode }}">⬇ Export student list (CSV)</a>
+  <a class="csv-btn" href="/admin/attendance-export.csv?group_id={{ g.group_id|urlencode }}"
+     title="Tutor sheet — students × session dates with theory/practical/notes columns">📋 Export attendance sheet (CSV)</a>
 </section>
 {% endblock %}

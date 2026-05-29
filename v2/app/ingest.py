@@ -20,15 +20,34 @@ def _live_csv() -> Path:
 # Kept for backwards compat with anyone importing LIVE_CSV directly
 LIVE_CSV = DATA_DIR / ".op_live_s26.csv"
 
-# Reformer is intentionally pulled from the Sales Board (H22) only — ONtraport
-# rollups for it are unreliable, and the Sales Board is the agreed source of
-# truth. Same applies to NutriCert/PPN/S&C/etc., which never had their own
-# raw_students rows because the ONtraport fields don't carry per-student
-# spent data.
+# Course-tuple shape:
+#   (stream, location_col, qual_col, start_col, price_col, spent_col,
+#    plan_col, timetable_col, method_col)
+# Pass "" for any column the stream doesn't carry in ONtraport — ingest just
+# leaves that attribute blank on the student row.
+#
+# Follow-on streams (S&C / PPN / AN / FBA) historically lived only on the
+# Sales Board as aggregates. After Adam's "track by year/term sold" call, we
+# ingest them as first-class student rows using the existing ONtraport
+# course-marker + price + spent fields. Revenue_period is backfilled from the
+# first paid invoice (see backfill_followon_periods in queries.py).
 COURSES = [
-    ("PT",       "PT Course Location",       "PT Course Qualifications",      "PT Course Start Date",       "PT Course Price",       "PT Course Spent",       "PT Course Payment Plan",       "PT Course Timetable",       "PT Payment Method"),
-    ("Pilates",  "Pilates Course Location",  "Pilates Course Qualifications", "Pilates Course Start Date",  "Pilates Course Price",  "Pilates Course Spent",  "Pilates Course Payment Plan",  "Pilates Course Timetable",  "Pilates Payment Method"),
+    ("PT",       "PT Course Location",      "PT Course Qualifications",       "PT Course Start Date",      "PT Course Price",      "PT Course Spent",      "PT Course Payment Plan",      "PT Course Timetable",      "PT Payment Method"),
+    ("Pilates",  "Pilates Course Location", "Pilates Course Qualifications",  "Pilates Course Start Date", "Pilates Course Price", "Pilates Course Spent", "Pilates Course Payment Plan", "Pilates Course Timetable", "Pilates Payment Method"),
+    # Reformer is in ONtraport with full field set — ingest it here too rather
+    # than going through the Sales Board.
+    ("Reformer", "Reformer Course Location","Reformer Course Qualification",  "Reformer Course Start Date","Reformer Course Price","Reformer Pilates Course Spent","Reformer Pilates Payment Plan","Reformer Course Timetable",""),
+    # Follow-on streams — no Year field, no Timetable in OP, no Payment Method.
+    ("S&C",      "S&C Location",            "S&C Qualification",              "S&C Start Date",            "S&C Price",            "S&C Spent",            "S&C Payment Plan",            "",                          ""),
+    ("PPN",      "",                        "PPN Course",                     "",                          "PPN Price",            "PPN Spent",            "PPN Payment Plan",            "",                          ""),
+    ("AN",       "",                        "AN Course",                      "",                          "AN Price",             "AN Spent",             "AN Payment Plan",             "",                          ""),
+    ("FBA",      "",                        "",                               "FBA Start Date",            "FBA Price",            "FBA Spent",            "",                            "",                          ""),
 ]
+
+# Streams whose revenue_period derives from sale date (first paid invoice)
+# rather than course start_date. PT/Pilates/Reformer are cohort-based with a
+# fixed start; follow-on streams are rolling.
+FOLLOWON_STREAMS = {"S&C", "PPN", "AN", "FBA"}
 
 DEFERRAL_PATTERNS = [
     re.compile(r"\bS\d\d\s*(combo|pilates|reformer|sse)\s*course\s*deferral\b", re.I),
@@ -70,10 +89,17 @@ def ingest_csv():
                 qual = f(r, qual_c)
                 price = num(f(r, price_c))
                 spent = num(f(r, spent_c))
+                # FBA has no qualification field — fall back to "Fitness Business
+                # Accelerator" so the row has a recognizable label.
+                if not qual and stream == "FBA" and (price > 0 or spent > 0):
+                    qual = "Fitness Business Accelerator"
                 if not qual and price == 0 and spent == 0:
                     continue
 
                 location = normalize_location(f(r, loc_c))
+                # PPN / AN are online-only — default location.
+                if not location and stream in {"PPN", "AN"}:
+                    location = "Online"
                 # Online cohorts (and the Launchpad Bundle which is online-only)
                 # are grouped by stream + start_date alone; the student's home
                 # location doesn't matter once they're on an online course.
@@ -83,7 +109,15 @@ def ingest_csv():
                 start_d = parse_date(start_raw)
                 start_iso = start_d.isoformat() if start_d else ""
                 cls_period = period_for(start_d)
-                rev_period = cls_period  # equal unless deferral (set below)
+
+                # Revenue-period rule:
+                #  • Cohort streams (PT/Pilates/Reformer) → derived from start_date
+                #  • Follow-on streams → left blank here, backfilled later from
+                #    the first paid invoice for that contact (sale-date semantics)
+                if stream in FOLLOWON_STREAMS:
+                    rev_period = ""  # filled by backfill_followon_periods
+                else:
+                    rev_period = cls_period
 
                 plan = f(r, plan_c)
                 # Deferral detection — placeholder until tag fetch lands.

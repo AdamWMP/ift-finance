@@ -11,6 +11,16 @@
   <div class="muted small">{{ f.title }} · {{ f.n }} students</div>
 </section>
 
+{% if f.needs_path_b %}
+<section class="block" style="border-left:3px solid var(--accent);padding:8px 12px;margin-bottom:12px">
+  <p class="muted small" style="margin:0">
+    <b>{{ f.filter_value }}</b> currently only exists as aggregate revenue from the Sales Board —
+    no per-student rows in ONtraport yet. Once the follow-on fields are wired up in ONtraport
+    (Path B) and the next sync runs, individual students will appear here.
+  </p>
+</section>
+{% endif %}
+
 <section class="hero">
   <div class="card"><div class="label">Expected</div><div class="num">€{{ "{:,.0f}".format(f.expected) }}</div></div>
   <div class="card"><div class="label">Collected</div><div class="num">€{{ "{:,.0f}".format(f.collected) }}</div></div>

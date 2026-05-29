@@ -1,0 +1,78 @@
+{% extends "_base.html" %}
+{% block title %}Certificate Export · {{ period }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="location.href='/admin/cert-export?period='+this.value">
+    {% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+<section class="block">
+  <h2>Certificate order export · {{ period }}</h2>
+  <p class="muted small">
+    Tick the cohorts you want certificates for. Output: one row per student with contact ID, name,
+    phone, email, location, timetable, start date, and one column per qualification on their course
+    (so combo cohorts get expanded e.g. <b>Fitness Instructor · Group Instructor · Personal Trainer</b>
+    across three columns).
+    Eligible streams: <b>{{ eligible_streams|join(', ') }}</b>.
+    {% if 'S&C' not in eligible_streams or not (groups | selectattr('stream','equalto','S&C') | list) %}
+    <br><span class="muted">S&amp;C cohorts will appear here once the follow-on stream is wired into ONtraport (Path B).</span>
+    {% endif %}
+  </p>
+
+  <form method="post" action="/admin/cert-export.csv">
+    <input type="hidden" name="period" value="{{ period }}">
+
+    <div class="filterbar" style="margin-bottom:8px">
+      <span class="chip active" data-value="">All streams</span>
+      {% for s in eligible_streams %}<span class="chip" data-value="{{ s }}">{{ s }}</span>{% endfor %}
+      <span style="margin-left:auto">
+        <a href="#" onclick="document.querySelectorAll('input[name=group_ids]:not([disabled])').forEach(x=>x.checked=true);return false;">Select all visible</a>
+        ·
+        <a href="#" onclick="document.querySelectorAll('input[name=group_ids]').forEach(x=>x.checked=false);return false;">Clear</a>
+      </span>
+    </div>
+
+    <table class="bars cert-export">
+      <thead>
+        <tr><th></th><th>Stream</th><th>Cohort</th><th>Students</th><th>Already issued</th></tr>
+      </thead>
+      <tbody>
+        {% for g in groups %}
+        <tr class="cert-row" data-stream="{{ g.stream }}">
+          <td><input type="checkbox" name="group_ids" value="{{ g.group_id }}"></td>
+          <td><b>{{ g.stream }}</b></td>
+          <td>{{ g.label }}</td>
+          <td>{{ g.students }}</td>
+          <td class="muted">{{ g.already_issued or 0 }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="muted">No eligible cohorts for {{ period }}.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div style="margin-top:12px">
+      <button type="submit" class="csv-btn">⬇ Download CSV</button>
+    </div>
+  </form>
+</section>
+
+<script>
+// Filter cohort rows by stream chip
+document.querySelectorAll('.filterbar .chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.filterbar .chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    const v = chip.dataset.value;
+    document.querySelectorAll('.cert-row').forEach(row => {
+      row.style.display = (!v || row.dataset.stream === v) ? '' : 'none';
+    });
+  });
+});
+</script>
+{% endblock %}

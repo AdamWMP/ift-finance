@@ -167,6 +167,19 @@ FIELD_MAP = {
     "f2596": "Reformer Course Price",         "f2599": "Reformer Pilates Course Spent",
     "f2598": "Reformer Pilates Payment Plan",
     "f2590": "Reformer Course Year",
+    # Follow-on streams — discovered via the "course marker" drop fields; revenue_period
+    # comes from earliest paid invoice rather than a stream-specific Year field
+    # (see backfill_followon_periods in queries.py).
+    "f2318": "S&C Course",          "f2316": "S&C Location",
+    "f2317": "S&C Qualification",   "f2315": "S&C Start Date",
+    "f2319": "S&C Price",           "f2322": "S&C Spent",
+    "f2321": "S&C Payment Plan",
+    "f2323": "PPN Course",          "f2324": "PPN Price",
+    "f2327": "PPN Spent",           "f2326": "PPN Payment Plan",
+    "f2329": "AN Course",           "f2330": "AN Price",
+    "f2333": "AN Spent",            "f2332": "AN Payment Plan",
+    "f2614": "FBA Enrolled",        "f2615": "FBA Start Date",
+    "f2616": "FBA Price",           "f2617": "FBA Spent",
 }
 
 # Year option IDs that map to "2026" — different per course (!)
@@ -175,6 +188,18 @@ YEAR_2026 = {
     "f2300": "587",  # Pilates
     "f2590": "616",  # Reformer
 }
+
+# Follow-on stream "course marker" fields — a contact with any of these set
+# has bought into that stream at some point. Period assignment happens later
+# from their first paid invoice (Adam's model: count revenue in the term it's
+# paid in, regardless of when the course actually runs).
+FOLLOWON_MARKER_OPTIONS = {
+    "f2318": "528",  # S&C Course → "Strength & Conditioning Course"
+    "f2323": "529",  # PPN Course → "Pre and Post Natal Online Course"
+    "f2329": "530",  # AN Course  → "Advanced Nutrition Course"
+    # FBA is a checkbox — discovered separately via f2614=1
+}
+FBA_ENROLLED_FIELD = "f2614"
 
 def _decode_value(field_id: str, raw, fields_meta: dict):
     """Translate ONtraport raw values to human-readable strings."""
@@ -196,30 +221,56 @@ def _decode_value(field_id: str, raw, fields_meta: dict):
         except ValueError: return s
     return s
 
-def discover_s26_contact_ids() -> list[str]:
-    """Find every contact whose PT, Pilates, OR Reformer course year = 2026."""
+def _discover_by_condition(cond_obj: dict, label: str, ids: set[str]) -> None:
+    """Helper: paginate a single OP search condition and add matching IDs."""
     import json as _json
+    cond = _json.dumps([cond_obj])
+    start = 0
+    while True:
+        r = requests.get(f"{OP_BASE}/objects",
+                         params={"objectID": 0, "range": PAGE, "start": start,
+                                 "condition": cond, "listFields": "id"},
+                         headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        rows = r.json().get("data", []) or []
+        for row in rows:
+            cid = str(row.get("id", "")).strip()
+            if cid: ids.add(cid)
+        print(f"  {label}: +{len(rows)} (total {len(ids)})", flush=True)
+        if len(rows) < PAGE: break
+        start += PAGE
+
+
+def discover_s26_contact_ids() -> list[str]:
+    """Find every contact who is enrolled in a tracked course/stream.
+
+    Discovery returns *candidates*. Period assignment (which term their
+    revenue counts towards) happens later from invoice dates — see
+    backfill_followon_periods. Old contacts whose first paid invoice is in a
+    prior term automatically end up in that prior term, not the current one.
+    """
     ids: set[str] = set()
+
+    # Year-tagged streams (PT / Pilates / Reformer) — discovered by year = 2026
     for field_id, value in YEAR_2026.items():
-        cond = _json.dumps([{
-            "field": {"field": field_id},
-            "op": "=",
-            "value": {"value": value},
-        }])
-        start = 0
-        while True:
-            r = requests.get(f"{OP_BASE}/objects",
-                             params={"objectID": 0, "range": PAGE, "start": start,
-                                     "condition": cond, "listFields": "id"},
-                             headers=HEADERS, timeout=30)
-            r.raise_for_status()
-            rows = r.json().get("data", []) or []
-            for row in rows:
-                cid = str(row.get("id", "")).strip()
-                if cid: ids.add(cid)
-            print(f"  {field_id}={value}: +{len(rows)} (total {len(ids)})", flush=True)
-            if len(rows) < PAGE: break
-            start += PAGE
+        _discover_by_condition(
+            {"field": {"field": field_id}, "op": "=", "value": {"value": value}},
+            f"{field_id}={value}", ids,
+        )
+
+    # Follow-on streams (S&C / PPN / AN) — course marker dropdown set
+    for field_id, option_id in FOLLOWON_MARKER_OPTIONS.items():
+        _discover_by_condition(
+            {"field": {"field": field_id}, "op": "=", "value": {"value": option_id}},
+            f"{field_id}={option_id} (follow-on marker)", ids,
+        )
+
+    # FBA — checkbox field, "checked" = "1"
+    _discover_by_condition(
+        {"field": {"field": FBA_ENROLLED_FIELD}, "op": "=", "value": {"value": "1"}},
+        f"{FBA_ENROLLED_FIELD}=1 (FBA Enrolled)", ids,
+    )
+
     return sorted(ids)
 
 def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
