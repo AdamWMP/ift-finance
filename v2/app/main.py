@@ -54,6 +54,10 @@ def api_search(q: str = ""):
 def api_today(period: str = "S26"):
     return queries.today_panel(period)
 
+@app.get("/api/trend")
+def api_trend(period: str = "S26", days: int = 90):
+    return {"period": period, "days": days, "points": queries.trend(period, days)}
+
 @app.post("/api/notes")
 def api_notes_set(contact_id: str = Form(...), stream: str = Form(""), body: str = Form("")):
     queries.set_note(contact_id, stream, body)
@@ -176,6 +180,15 @@ def location_view(request: Request, name: str, period: str = "S26"):
         "f": queries.students_filtered(period, location=name),
     })
 
+@app.get("/stream", response_class=HTMLResponse)
+def stream_view(request: Request, name: str, period: str = "S26"):
+    f = queries.students_filtered(period, stream=name)
+    # Streams that only live in the Sales Board (NutriCert, PPN, FBA, S&C, etc.)
+    # have no per-student rows yet — flag that so the template can show a hint.
+    if not f["students"] and name not in {"PT", "Pilates", "Reformer"}:
+        f["needs_path_b"] = True
+    return templates.TemplateResponse("filter.html", {"request": request, "f": f})
+
 @app.post("/group/cert-toggle")
 def group_cert_toggle(contact_id: str = Form(...), stream: str = Form(...), group_id: str = Form(...)):
     from .db import get_db
@@ -251,6 +264,87 @@ def admin_transactions_delete(id: int = Form(...), period: str = Form("S26")):
         c.execute("DELETE FROM transactions WHERE id=? AND source='manual'", (id,))
     return RedirectResponse(url=f"/admin/transactions?period={period}", status_code=303)
 
+@app.get("/admin/attendance-export.csv")
+def admin_attendance_export(group_id: str):
+    """Per-cohort attendance sheet for tutors. One row per student; one column
+    per session date generated from the timetable. Theory, Practical, Notes at
+    the right edge."""
+    import csv, io
+    from fastapi.responses import Response
+    from datetime import date as _date
+    payload = queries.attendance_export(group_id)
+    if not payload:
+        return RedirectResponse("/board", status_code=302)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    # Cohort metadata block — tutors can see at a glance what they're filling in
+    w.writerow(["Cohort",        payload["label"]])
+    w.writerow(["Stream",        payload["stream"]])
+    w.writerow(["Location",      payload["location"] or "—"])
+    w.writerow(["Qualification", payload["qualification"] or "—"])
+    w.writerow(["Timetable",     payload["timetable"] or "—"])
+    w.writerow(["Start date",    payload["start_date"] or "—"])
+    w.writerow(["Sessions",      len(payload["session_dates"])])
+    w.writerow(["Generated",     _date.today().isoformat()])
+    w.writerow([])
+    # Header row: student bio + one column per session, then Theory/Practical/Notes
+    session_labels = [d.strftime("S%d · %-d %b") if hasattr(d, 'strftime') else str(d)
+                      for d in payload["session_dates"]]
+    # Replace S<index>... with sequential session number prefix
+    session_labels = [f"S{i+1} · {d.strftime('%a %-d %b')}"
+                      for i, d in enumerate(payload["session_dates"])]
+    header = ["Contact ID", "Name", "Email", "Phone", "Payment status"]
+    header += session_labels
+    header += ["Theory %", "Practical %", "Notes"]
+    w.writerow(header)
+    # One row per student, blank attendance + exam cells for tutors to fill
+    for s in payload["students"]:
+        row = [s["contact_id"], s["name"], s["email"], s["phone"], s["payment_status"]]
+        row += [""] * len(session_labels)
+        row += ["", "", ""]
+        w.writerow(row)
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    safe_label = "".join(c for c in payload["label"] if c.isalnum() or c in " -_·").strip()
+    fname = f"ift-attendance-{safe_label}.csv"
+    return Response(content=csv_bytes, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.get("/admin/cert-export", response_class=HTMLResponse)
+def admin_cert_export(request: Request, period: str = "S26"):
+    return templates.TemplateResponse("cert_export.html", {
+        "request": request,
+        "period": period,
+        "available": queries.periods_with_data() or [period],
+        "groups": queries.cert_export_groups(period),
+        "eligible_streams": sorted(queries.CERT_EXPORT_STREAMS),
+    })
+
+@app.post("/admin/cert-export.csv")
+def admin_cert_export_csv(request: Request,
+                          period: str = Form("S26"),
+                          group_ids: list[str] = Form(default=[])):
+    import csv, io
+    from fastapi.responses import Response
+    rows, max_quals = queries.cert_export_rows(group_ids)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    header = ["contact_id", "first_name", "last_name", "phone", "email",
+              "location", "timetable", "start_date"]
+    header += [f"qual_{i+1}" for i in range(max_quals)]
+    w.writerow(header)
+    for r in rows:
+        base = [r["contact_id"], r["first_name"] or "", r["last_name"] or "",
+                r["phone"] or "", r["email"] or "",
+                r["location"] or "", r["timetable"] or "", r["start_date"] or ""]
+        quals = r["quals"] + [""] * (max_quals - len(r["quals"]))
+        w.writerow(base + quals)
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    from datetime import date as _date
+    fname = f"ift-cert-order-{period}-{_date.today().isoformat()}.csv"
+    return Response(content=csv_bytes, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
 @app.get("/admin/work", response_class=HTMLResponse)
 def admin_work_view(request: Request, period: str = "S26"):
     return templates.TemplateResponse("admin_work.html", {
@@ -306,4 +400,5 @@ def board(request: Request, period: str = "S26"):
         "money_in": queries.by_payment_method(period),
         "today": queries.today_panel(period),
         "deposit": queries.avg_deposit(period),
+        "simon": queries.simon_panel(period),
     })

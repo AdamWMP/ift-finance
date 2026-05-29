@@ -11,6 +11,80 @@
 {% endblock %}
 
 {% block main %}
+
+{# ---- Board-snapshot panel (the "DASHBOARD" tab from the old A25 report) ---- #}
+<section class="block simon-snapshot">
+  <div class="sales-head">
+    <h2>Board snapshot · {{ period }}</h2>
+    <div class="sales-meta muted">
+      Per-segment fees + sales-equivalent — designed for board-level read at a glance.
+      {% if simon.prev_period %}<br>% Change is vs <b>{{ simon.prev_period }}</b> at the equivalent point.{% endif %}
+    </div>
+  </div>
+
+  <div class="simon-grid">
+    {# Segment cards: TOTAL / COMBO / PILATES / ONLINE-BELFAST #}
+    {% for label, seg in simon.segments.items() %}
+    <div class="simon-card">
+      <div class="simon-head">{{ label }}</div>
+      <div class="simon-row"><span class="muted">Fees due</span>   <b>€{{ "{:,.0f}".format(seg.due)  }}</b></div>
+      <div class="simon-row"><span class="muted">Fees paid</span>  <b style="color:var(--good)">€{{ "{:,.0f}".format(seg.paid) }}</b></div>
+      <div class="simon-row"><span class="muted">Fees owed</span>  <b style="color:var(--bad)">€{{ "{:,.0f}".format(seg.owed) }}</b></div>
+      <div class="simon-sep"></div>
+      <div class="simon-row"><span class="muted">Potential sales</span> <b>{{ seg.potential_sales }}</b></div>
+      <div class="simon-row"><span class="muted">Actual sales</span>    <b>{{ seg.actual_sales }}</b></div>
+      <div class="simon-row"><span class="muted">Remaining</span>       <b>{{ seg.remaining_sales }}</b></div>
+      {% if label == 'TOTAL' and simon.deltas.total_paid is not none %}
+      <div class="simon-row" style="margin-top:6px;border-top:1px dashed var(--line);padding-top:6px">
+        <span class="muted">vs {{ simon.prev_period }}</span>
+        <b style="color:{{ 'var(--good)' if simon.deltas.total_paid >= 0 else 'var(--bad)' }}">
+          {{ "{:+.0f}".format(simon.deltas.total_paid) }}%
+        </b>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="simon-bottom">
+    {# Money-in mini panel — top 6 methods #}
+    <div class="simon-money-in">
+      <div class="simon-head">How money has come in</div>
+      <table class="bars compact">
+        {% for m in simon.money_in[:6] %}
+        {% set is_sb = m.method == 'Sales Board (other streams)' %}
+        <tr {% if not is_sb %}class="row-link" onclick="location.href='/method?name={{ m.method|urlencode }}&period={{ period }}'"{% endif %}>
+          <td class="name">{{ m.method }}</td>
+          <td class="vals">€{{ "{:,.0f}".format(m.collected) }}</td>
+          <td class="pct">{{ "{:.1f}".format(m.pct) }}%</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    {# Snapshot history — "What & When Has Money Come In" #}
+    <div class="simon-history">
+      <div class="simon-head">What &amp; when has money come in</div>
+      {% if simon.history %}
+      <table class="bars compact">
+        <thead><tr><th>Date</th><th>Sales</th><th>Revenue</th></tr></thead>
+        <tbody>
+          {% for h in simon.history %}
+          <tr>
+            <td>{{ h.date }}</td>
+            <td>{{ h.sales }}</td>
+            <td>€{{ "{:,.0f}".format(h.revenue) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted small">Snapshots populate after the next sync; one new row lands per day.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
 <section class="today">
   <div class="head">Today</div>
   <div><div class="lbl">New sales</div><div class="v">{{ today.today.new_sales }}</div></div>
@@ -117,6 +191,73 @@
 </section>
 
 <section class="block">
+  <div class="sales-head">
+    <h2>Trend</h2>
+    <div class="sales-meta muted">
+      <a href="#" data-trend-range="30">30d</a> ·
+      <a href="#" data-trend-range="90" class="ink"><b>90d</b></a> ·
+      <a href="#" data-trend-range="365">1y</a>
+    </div>
+  </div>
+  <div style="position:relative;height:240px">
+    <canvas id="trendChart"></canvas>
+  </div>
+  <div id="trendEmpty" class="muted small" style="display:none;padding:8px 0">
+    No snapshots yet — the first one is captured on the next sync, then a new point lands daily.
+  </div>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+  const period = {{ period|tojson }};
+  const canvas = document.getElementById('trendChart');
+  const empty  = document.getElementById('trendEmpty');
+  let chart = null;
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  async function load(days){
+    const r = await fetch(`/api/trend?period=${encodeURIComponent(period)}&days=${days}`);
+    const j = await r.json();
+    const pts = j.points || [];
+    if (!pts.length){ canvas.style.display='none'; empty.style.display='block'; return; }
+    canvas.style.display='block'; empty.style.display='none';
+    const labels = pts.map(p => p.date);
+    const revenue = pts.map(p => p.revenue);
+    const sales = pts.map(p => p.sales);
+    const ink = css('--ink') || '#222';
+    const accent = css('--accent') || '#3b82f6';
+    if (chart) chart.destroy();
+    chart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Revenue (€)', data: revenue, borderColor: accent, backgroundColor: accent+'22',
+          yAxisID: 'y', tension: 0.25, fill: true, pointRadius: 0, borderWidth: 2 },
+        { label: 'Sales-equiv', data: sales, borderColor: ink, yAxisID: 'y1',
+          tension: 0.25, pointRadius: 0, borderWidth: 1.5, borderDash: [4,4] },
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+          y:  { position: 'left',  title: { display: true, text: '€' } },
+          y1: { position: 'right', title: { display: true, text: 'sales' }, grid: { drawOnChartArea: false } },
+        },
+        plugins: { legend: { position: 'bottom' } }
+      }
+    });
+  }
+  document.querySelectorAll('[data-trend-range]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelectorAll('[data-trend-range]').forEach(x => x.classList.remove('ink'));
+      a.classList.add('ink');
+      load(parseInt(a.dataset.trendRange, 10));
+    });
+  });
+  load(90);
+})();
+</script>
+
+<section class="block">
   <h2>By pathway</h2>
   <table class="bars">
     {% for p in pathways %}
@@ -136,8 +277,16 @@
   <table class="bars">
     {% set max_in = money_in[0].collected if money_in and money_in|length > 0 else 1 %}
     {% for m in money_in %}
-    <tr class="row-link" onclick="location.href='/method?name={{ m.method|urlencode }}&period={{ period }}'">
-      <td class="name"><a href="/method?name={{ m.method|urlencode }}&period={{ period }}">{{ m.method }}</a></td>
+    {% set is_sb = m.method == 'Sales Board (other streams)' %}
+    {% set href = ('/method?name=' ~ (m.method|urlencode) ~ '&period=' ~ period) %}
+    <tr class="row-link" {% if not is_sb %}onclick="location.href='{{ href }}'"{% endif %}>
+      <td class="name">
+        {% if is_sb %}
+          <span title="Follow-on streams (Reformer, NutriCert, PPN, FBA, S&C, etc.) — tracked as aggregate revenue from the Sales Board. Drill-down per student available once Path B / ONtraport schema lands.">{{ m.method }} <span class="muted small">ⓘ</span></span>
+        {% else %}
+          <a href="{{ href }}">{{ m.method }}</a>
+        {% endif %}
+      </td>
       <td class="bar"><div class="track"><div class="fill" style="width: {{ (m.collected / max_in * 100) | round(1) }}%"></div></div></td>
       <td class="vals">€{{ "{:,.0f}".format(m.collected) }}</td>
       <td class="pct">{{ "{:.1f}".format(m.pct) }}%</td>
@@ -150,8 +299,8 @@
   <h2>By stream</h2>
   <table class="bars">
     {% for s in streams %}
-    <tr>
-      <td class="name">{{ s.stream }}</td>
+    <tr class="row-link" onclick="location.href='/stream?name={{ s.stream|urlencode }}&period={{ period }}'">
+      <td class="name"><a href="/stream?name={{ s.stream|urlencode }}&period={{ period }}">{{ s.stream }}</a></td>
       <td class="bar">
         <div class="track"><div class="fill" style="width: {{ s.pct }}%"></div></div>
       </td>

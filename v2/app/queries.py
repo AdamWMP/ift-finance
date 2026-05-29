@@ -262,6 +262,38 @@ def all_notes_for_contacts(contact_ids: list[str]) -> dict[str, str]:
     return {r["contact_id"]: r["body"] or "" for r in rs}
 
 
+def record_snapshot(period: str, snapshot_date: str | None = None) -> dict:
+    """Capture today's sales-equivalent + revenue for `period`.
+    Same-day re-runs overwrite (date+period is the unique key), so the
+    10-min sync loop keeps the trailing point fresh until the day rolls over."""
+    s = sales_summary(period)
+    d = snapshot_date or date.today().isoformat()
+    with get_db() as c:
+        c.execute("""
+            INSERT INTO snapshots (snapshot_date, period, sales_count, revenue)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(snapshot_date, period) DO UPDATE SET
+                sales_count = excluded.sales_count,
+                revenue     = excluded.revenue,
+                created_at  = datetime('now')
+        """, (d, period, int(round(s["sales"])), float(s["collected"])))
+    return {"date": d, "period": period, "sales": s["sales"], "revenue": s["collected"]}
+
+
+def trend(period: str, days: int = 90) -> list[dict]:
+    """Snapshot series for the last `days` days, ascending by date."""
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT snapshot_date, sales_count, revenue
+            FROM snapshots
+            WHERE period=? AND snapshot_date >= ?
+            ORDER BY snapshot_date ASC
+        """, (period, cutoff)).fetchall()
+    return [{"date": r["snapshot_date"], "sales": r["sales_count"] or 0,
+             "revenue": r["revenue"] or 0.0} for r in rs]
+
+
 def compare_periods(a: str, b: str) -> dict:
     """Side-by-side hero metrics for two periods."""
     return {"a": macro(a), "b": macro(b), "a_label": a, "b_label": b}
@@ -295,10 +327,19 @@ def manual_transactions_summary(period: str | None = None) -> dict:
         by_cat[key] = by_cat.get(key, 0) + r["amount"]
     return {"count": len(rows), "in": in_total, "out": out_total, "by_cat": by_cat}
 
-# Categories that overlap with raw_students (Pilates / PT) — counted there
-# already, so MUST NOT be re-added to macro.collected. They still appear in
-# the per-stream / per-method breakdowns for visibility, just not in totals.
-OVERLAPPING_SB_CATEGORIES = {"online_pilates", "tesg_grants", "iftg_global"}
+# Categories that overlap with raw_students — counted there already, so MUST
+# NOT be re-added to macro.collected. They still appear in the per-stream /
+# per-method breakdowns for visibility, just not in totals.
+#
+# With the follow-on-stream ingest live (S&C / PPN / AN / FBA / Reformer have
+# their own rows in `students`), the Sales Board categories for those streams
+# are now also overlapping. We exclude them from totals here while keeping
+# them in the by-stream view as a sanity-check until the live data is trusted
+# end-to-end — then drop these categories entirely.
+OVERLAPPING_SB_CATEGORIES = {
+    "online_pilates", "tesg_grants", "iftg_global",
+    "reformer", "sc_dublin", "sc_galway", "pre_post_natal", "fba", "nutricert",
+}
 
 def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -> dict[str, float]:
     with get_db() as c:
@@ -519,9 +560,10 @@ def _recent_daily_rate(days: int = 60) -> float:
 
 
 def students_filtered(period: str, *, payment_method: str | None = None,
-                      location: str | None = None, pathway: str | None = None) -> dict:
+                      location: str | None = None, pathway: str | None = None,
+                      stream: str | None = None) -> dict:
     """Generic filter — used by drill-down pages for payment methods, locations,
-    and pathways alike."""
+    pathways, and streams alike."""
     sql = """
         SELECT contact_id, first_name, last_name, email, phone,
                stream, qualification, location, start_date, group_id,
@@ -541,6 +583,9 @@ def students_filtered(period: str, *, payment_method: str | None = None,
     if pathway:
         sql += " AND pathway = ?"
         args.append(pathway)
+    if stream:
+        sql += " AND stream = ?"
+        args.append(stream)
     sql += " ORDER BY last_name, first_name"
     with get_db() as c:
         rs = c.execute(sql, args).fetchall()
@@ -563,6 +608,7 @@ def students_filtered(period: str, *, payment_method: str | None = None,
     if payment_method: title_bits.append(f"Payment method: {payment_method}")
     if location:       title_bits.append(f"Location: {location}")
     if pathway:        title_bits.append(f"Pathway: {pathway}")
+    if stream:         title_bits.append(f"Stream: {stream}")
     return {
         "students": students, "n": len(students),
         "expected": expected, "collected": collected,
@@ -570,8 +616,9 @@ def students_filtered(period: str, *, payment_method: str | None = None,
         "pct": (collected / expected * 100) if expected else 0,
         "title": " · ".join(title_bits),
         "period": period,
-        "filter_kind": "method" if payment_method else "location" if location else "pathway" if pathway else "all",
-        "filter_value": payment_method or location or pathway or "",
+        "filter_kind": ("method" if payment_method else "location" if location
+                        else "pathway" if pathway else "stream" if stream else "all"),
+        "filter_value": payment_method or location or pathway or stream or "",
         "counts": {
             "paid":       sum(1 for s in students if s["status"] == "paid"),
             "cert_ready": sum(1 for s in students if s["status"] == "cert-ready"),
@@ -724,6 +771,16 @@ def by_payment_method(period: str) -> list[dict]:
             spent -= amt  # remainder stays under their default method
         spent = max(spent, 0)
         by_method[method] = by_method.get(method, 0) + spent
+    # Sales Board categories (Reformer, NutriCert, PPN, FBA, S&C, etc.) are
+    # collected revenue too — without this they're counted under Active Fees
+    # Paid but never appear under "How money has come in", and the totals stop
+    # reconciling. Surface them as a synthetic "Sales Board (other streams)"
+    # bucket, drillable into the by-stream breakdown.
+    sb_extra = sum(_sales_board_by_category(period).values())
+    if sb_extra > 0:
+        by_method["Sales Board (other streams)"] = (
+            by_method.get("Sales Board (other streams)", 0) + sb_extra
+        )
     total = sum(by_method.values()) or 1
     out = [{"method": m, "collected": v, "pct": v / total * 100}
            for m, v in by_method.items() if v > 0]
@@ -825,6 +882,501 @@ def fees_by_stream_named(period: str) -> list[dict]:
         nice = label.get(r["stream"], r["stream"])
         out.append({**r, "label": nice})
     return out
+
+# Which streams are eligible for cert ordering. User asked for the four
+# main accredited courses (PT, Mat Pilates, Reformer Pilates, S&C). PPN / AN
+# / FBA also have student rows but are typically not printed as certificates
+# in batches — they're issued as completions roll in.
+CERT_EXPORT_STREAMS = {"PT", "Pilates", "Reformer", "S&C"}
+
+
+def _split_quals(qualification: str | None) -> list[str]:
+    """Split an ONtraport qualification name into individual cert quals.
+
+    The qual name often packs multiple sub-quals in parentheses:
+        "The Cert (Fitness Instructor, Group Instructor, Personal Trainer)"
+            → ["Fitness Instructor", "Group Instructor", "Personal Trainer"]
+        "(Launchpad Bundle) Fitness Instructor & Personal Trainer"
+            → ["Fitness Instructor", "Personal Trainer"]
+        "Strength & Conditioning Course"
+            → ["Strength & Conditioning Course"]
+        "Reformer Pilates Course (CPD)"
+            → ["Reformer Pilates Course"]
+    """
+    q = (qualification or "").strip()
+    if not q:
+        return []
+    # A parenthetical is a cert breakdown ONLY when the outer text names a known
+    # bundle. Otherwise it could be a schedule ("Phase 1 (Fri, Sat, Sun)"),
+    # accreditation metadata ("(Active IQ, RQF L4)"), or a level tag ("(CPD)").
+    ACCRED_HINTS = ("active iq", "rqf", "qqi", "eqf", "cpd", "ofqual", "level ")
+    BUNDLE_OUTER_RE = re.compile(
+        r"^\s*(the\s+(cert|career|business|studio)|launchpad(\s+bundle)?|"
+        r"high\s+performance\s+bundle|bundle:|combination\s+course|combo\s+course)",
+        re.I,
+    )
+    m = re.search(r"\(([^)]+)\)", q)
+    paren = m.group(1) if m else ""
+    outer_for_check = re.sub(r"\([^)]*\)", "", q).strip()
+    paren_is_breakdown = (
+        bool(paren) and "," in paren
+        and BUNDLE_OUTER_RE.search(outer_for_check) is not None
+        and not any(h in paren.lower() for h in ACCRED_HINTS)
+    )
+    if paren_is_breakdown:
+        parts = re.split(r"\s*,\s*", paren)
+    else:
+        # Strip any parentheticals (CPD / L4 / bundle name) from the outer label.
+        outer = re.sub(r"\([^)]*\)", "", q).strip()
+        # Split on "&" or "+" ONLY when a *bundle* parenthetical was present —
+        # e.g. "(Launchpad Bundle) Fitness Instructor & Personal Trainer" → 2 quals.
+        # Accreditation parentheticals like "(Active IQ, RQF L4)" don't count, so
+        # "Level 4 Strength & Conditioning (Active IQ, RQF L4)" stays whole.
+        paren_is_bundle = bool(paren) and not any(
+            h in paren.lower() for h in ACCRED_HINTS
+        )
+        if paren_is_bundle:
+            parts = re.split(r"\s*(?:&|\+)\s*", outer)
+        else:
+            parts = [outer]
+    out = []
+    for p in parts:
+        s = p.strip(" -·")
+        if s and s.lower() not in {"course", "cpd", "l4", "level 4"}:
+            out.append(s)
+    # de-duplicate while preserving order
+    seen = set()
+    dedup = []
+    for s in out:
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            dedup.append(s)
+    return dedup
+
+
+# --- Follow-on stream period backfill ---------------------------------------
+# Cohort streams (PT/Pilates/Reformer) derive `revenue_period` from start_date.
+# Follow-on streams (S&C/PPN/AN/FBA) are rolling — Adam's rule is "the term the
+# money was paid in." This pass fills in `revenue_period` for those rows from
+# the contact's invoice activity.
+#
+# Heuristic (v1): the contact's most recent paid invoice ≥ €50 is the proxy
+# for "when their follow-on payment came in." For students with `spent == 0`
+# (potential sales), we use today's period so they appear in the current
+# dashboard as outstanding potential. Edge case: a contact who paid for both
+# a main course and a follow-on across different terms can have their
+# follow-on misattributed by one term — fixable later by ingesting purchase
+# line-items (ONtraport object 17) so we can match invoices to products.
+
+MIN_INVOICE_FOR_PERIOD = 50.0  # ignore €0–€49 transactions when picking the proxy
+
+def backfill_followon_periods() -> dict:
+    """Set `revenue_period` for every follow-on-stream student row.
+
+    Returns {assigned, fallback_today, still_blank}.
+    """
+    from .db import period_for
+    from .ingest import FOLLOWON_STREAMS  # local import to avoid module-cycle risk
+    from datetime import date
+    stats = {"assigned": 0, "fallback_today": 0, "still_blank": 0}
+    with get_db() as c:
+        rows = c.execute(f"""
+            SELECT s.contact_id, s.stream, s.spent, s.price,
+                   COALESCE(s.start_date,'') AS start_date
+            FROM students s
+            WHERE s.stream IN ({",".join("?"*len(FOLLOWON_STREAMS))})
+              AND (s.revenue_period IS NULL OR s.revenue_period = '')
+              AND s.is_dropoff = 0
+        """, tuple(FOLLOWON_STREAMS)).fetchall()
+        today_period = period_for(date.today())
+        for r in rows:
+            cid    = r["contact_id"]
+            spent  = float(r["spent"] or 0)
+            start_d= r["start_date"] or ""
+            # Prefer the stream's start_date if ONtraport has one (S&C / FBA).
+            if start_d:
+                p = period_for(date.fromisoformat(start_d[:10])) if start_d[:10] else ""
+                if p:
+                    c.execute("UPDATE students SET revenue_period=?, class_period=? "
+                              "WHERE contact_id=? AND stream=?",
+                              (p, p, cid, r["stream"]))
+                    stats["assigned"] += 1
+                    continue
+            # Otherwise: most recent paid invoice ≥ MIN_INVOICE_FOR_PERIOD
+            if spent > 0:
+                inv = c.execute("""
+                    SELECT COALESCE(closed_date, invoice_date) AS d
+                    FROM invoices
+                    WHERE contact_id=? AND status_code=1
+                      AND COALESCE(total_paid,0) >= ?
+                    ORDER BY COALESCE(closed_date, invoice_date) DESC LIMIT 1
+                """, (cid, MIN_INVOICE_FOR_PERIOD)).fetchone()
+                if inv and inv["d"]:
+                    try:
+                        p = period_for(date.fromisoformat(inv["d"][:10]))
+                    except (ValueError, TypeError):
+                        p = ""
+                    if p:
+                        c.execute("UPDATE students SET revenue_period=?, class_period=COALESCE(NULLIF(class_period,''),?) "
+                                  "WHERE contact_id=? AND stream=?",
+                                  (p, p, cid, r["stream"]))
+                        stats["assigned"] += 1
+                        continue
+            # Fallback: potential sale → current term
+            if today_period:
+                c.execute("UPDATE students SET revenue_period=?, class_period=COALESCE(NULLIF(class_period,''),?) "
+                          "WHERE contact_id=? AND stream=?",
+                          (today_period, today_period, cid, r["stream"]))
+                stats["fallback_today"] += 1
+            else:
+                stats["still_blank"] += 1
+    return stats
+
+
+# --- "Board snapshot for Simon" panel ---------------------------------------
+# Reproduces the layout of Adam's previous A25 Dashboard tab so the board can
+# see total + COMBO + PILATES + ONLINE/BELFAST broken down at a glance.
+
+def _prev_period(period: str) -> str:
+    """S26 → A25, A25 → S25, S25 → A24, etc."""
+    if len(period) != 3:
+        return ""
+    season, yy = period[0].upper(), int(period[1:])
+    if season == "S":
+        return f"A{yy-1:02d}"
+    if season == "A":
+        return f"S{yy:02d}"
+    return ""
+
+def _segment_fees(period: str, where_sql: str, params: tuple) -> dict:
+    """Per-segment Due/Paid/Owed + sales-equivalent. `where_sql` is appended to
+    a WHERE that already filters revenue_period and excludes drop-offs."""
+    with get_db() as c:
+        r = c.execute(f"""
+            SELECT COUNT(DISTINCT contact_id) AS contacts,
+                   COALESCE(SUM(price),0) AS due,
+                   COALESCE(SUM(spent),0) AS paid
+            FROM students
+            WHERE revenue_period=? AND is_dropoff=0 {where_sql}
+        """, (period, *params)).fetchone()
+    due, paid = r["due"] or 0, r["paid"] or 0
+    potential_sales = round(due / SALE_VALUE, 1)
+    actual_sales    = round(paid / SALE_VALUE, 1)
+    return {
+        "contacts": r["contacts"] or 0,
+        "due": due, "paid": paid, "owed": max(due - paid, 0),
+        "potential_sales": potential_sales,
+        "actual_sales": actual_sales,
+        "remaining_sales": max(potential_sales - actual_sales, 0),
+    }
+
+
+def simon_panel(period: str) -> dict:
+    """One-screen board-level snapshot: per-segment fees and sales, plus a
+    'what & when has money come in' history pulled from the snapshots table.
+
+    Segments:
+      • TOTAL — everything in the current revenue_period (incl. sales board)
+      • COMBO — contacts enrolled in BOTH PT and Pilates streams
+      • PILATES — Pilates-only contacts (excludes combo)
+      • ONLINE/BELFAST — location in ('Online','Derry') OR stream-pathway 'Online'
+    """
+    # TOTAL: reuse macro() so sales-board categories are included
+    m = macro(period)
+    total = {
+        "contacts": m["students"],
+        "due": m["expected"], "paid": m["collected"], "owed": max(m["outstanding"], 0),
+        "potential_sales": round(m["expected"]  / SALE_VALUE, 1),
+        "actual_sales":    round(m["collected"] / SALE_VALUE, 1),
+        "remaining_sales": max(round((m["expected"] - m["collected"]) / SALE_VALUE, 1), 0),
+    }
+
+    # COMBO: contacts that have BOTH a PT row and a Pilates row in this period.
+    with get_db() as c:
+        combo_ids_rows = c.execute("""
+            SELECT contact_id
+            FROM students
+            WHERE revenue_period=? AND is_dropoff=0 AND stream IN ('PT','Pilates')
+            GROUP BY contact_id
+            HAVING COUNT(DISTINCT stream) = 2
+        """, (period,)).fetchall()
+        combo_ids = [r["contact_id"] for r in combo_ids_rows]
+    if combo_ids:
+        qmarks = ",".join("?" for _ in combo_ids)
+        combo = _segment_fees(period, f"AND contact_id IN ({qmarks})", tuple(combo_ids))
+    else:
+        combo = _segment_fees(period, "AND 1=0", ())
+
+    # PILATES standalone: stream=Pilates AND contact NOT in combo set
+    if combo_ids:
+        qmarks = ",".join("?" for _ in combo_ids)
+        pilates = _segment_fees(period,
+            f"AND stream='Pilates' AND contact_id NOT IN ({qmarks})", tuple(combo_ids))
+    else:
+        pilates = _segment_fees(period, "AND stream='Pilates'", ())
+
+    # ONLINE/BELFAST: Online location, Derry (renamed from Belfast), or anything
+    # whose pathway has "Online" in it (covers Online combo pathways).
+    online = _segment_fees(period,
+        "AND (location IN ('Online','Derry') OR pathway LIKE '%Online%')", ())
+
+    # Money-in summary — top rows + everything else into "Other"
+    money_in_rows = by_payment_method(period)
+
+    # Snapshot history (4 most recent month-ends if we have them, else last 4 points)
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT snapshot_date, sales_count, revenue
+            FROM snapshots WHERE period=?
+            ORDER BY snapshot_date DESC LIMIT 12
+        """, (period,)).fetchall()
+    history = [{"date": r["snapshot_date"], "sales": r["sales_count"] or 0,
+                "revenue": r["revenue"] or 0.0} for r in rs]
+    # keep one per calendar month, most recent kept
+    seen_months, monthly = set(), []
+    for h in history:
+        ym = h["date"][:7]
+        if ym in seen_months:
+            continue
+        seen_months.add(ym)
+        monthly.append(h)
+    monthly = list(reversed(monthly[:4]))  # ascending, max 4
+
+    # % change vs previous term — uses existing macro() so it's tolerant of empty A25
+    prev = _prev_period(period)
+    prev_m = macro(prev) if prev else {"collected": 0, "expected": 0, "students": 0}
+    def _delta(curr, prior):
+        if not prior: return None
+        return (curr - prior) / prior * 100.0
+
+    deltas = {
+        "total_paid":      _delta(total["paid"],      prev_m["collected"]),
+        "total_due":       _delta(total["due"],       prev_m["expected"]),
+        # segment-level deltas would require segmenting the previous period the
+        # same way — backfill task. Show — for now.
+    }
+
+    return {
+        "period": period,
+        "prev_period": prev,
+        "segments": {
+            "TOTAL":          total,
+            "COMBO":          combo,
+            "PILATES":        pilates,
+            "ONLINE/BELFAST": online,
+        },
+        "money_in": money_in_rows,
+        "history": monthly,
+        "deltas": deltas,
+    }
+
+
+# --- Attendance export ------------------------------------------------------
+# Tutors get a downloadable attendance sheet per cohort, with one row per
+# student and one column per session date. Plus theory + practical exam +
+# notes columns at the right. Session dates are generated from the cohort's
+# timetable string — see _generate_session_dates for the parsing rules.
+
+_WEEKDAY_TOKENS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+
+def _weekdays_in_text(text: str) -> list[int]:
+    """Return weekday indices (0=Mon..6=Sun) appearing in the text, in order
+    they first appear. Matches whole-word tokens so 'Sunday' doesn't double-
+    match 'sun'."""
+    t = (text or "").lower()
+    found: list[int] = []
+    for tok, idx in _WEEKDAY_TOKENS.items():
+        # word boundary check
+        if re.search(rf"\b{tok}\b", t) and idx not in found:
+            found.append(idx)
+    return found
+
+
+def _generate_session_dates(stream: str, timetable: str, qualification: str,
+                            start_date: str) -> list[date]:
+    """Best-effort: turn (stream, timetable, qualification, start_date) into
+    a list of class session dates.
+
+    Patterns we recognise:
+      • "(N Weeks)"            → N-week course span (default 16 for PT cohort
+                                 streams, 8 for shorter blocks)
+      • "Bi-Weekly" / "Bi Weekly" / "Fortnight" → every 2 weeks
+      • "Intensive" / "5 Days" / "3 Weekend Intensive"
+                               → consecutive-day or weekend-block layouts
+      • S&C "Phase 1 (Fri, Sat, Sun)" → 3 consecutive days
+      • S&C "Phase 2 (Sat, Sun)"      → 2 consecutive days
+      • S&C "Phase 1 & 2 (5 Days)"    → 5 consecutive days
+
+    Falls back to weekly sessions on the start-date's weekday for 16 weeks
+    if nothing parses. Returns a sorted list of distinct dates.
+    """
+    if not start_date:
+        return []
+    try:
+        d0 = date.fromisoformat(start_date[:10])
+    except ValueError:
+        return []
+
+    tt = (timetable or "").lower()
+    qual = (qualification or "").lower()
+    combined = f"{tt} {qual}"
+
+    # Multi-day intensive blocks
+    if "phase 1 & 2" in qual or "phase 1 and 2" in qual or "5 day" in tt or "5 days" in tt:
+        return [d0 + timedelta(days=i) for i in range(5)]
+    if "phase 1" in qual and "phase 2" not in qual:
+        # Fri/Sat/Sun
+        return [d0 + timedelta(days=i) for i in range(3)]
+    if "phase 2" in qual:
+        # Sat/Sun
+        return [d0 + timedelta(days=i) for i in range(2)]
+
+    # "3 Weekend Intensive (Sat & Sun)" — three Sat+Sun pairs, two weeks apart
+    if "weekend intensive" in tt or "3 weekend" in tt:
+        out = []
+        cur = d0
+        for _ in range(3):
+            out.append(cur)
+            out.append(cur + timedelta(days=1))
+            cur += timedelta(days=14)
+        return sorted(set(out))
+
+    # Extract week count
+    m_weeks = re.search(r"(\d+)\s*week", tt)
+    weeks = int(m_weeks.group(1)) if m_weeks else None
+
+    is_biweekly = bool(re.search(r"bi[- ]?weekly|fortnight", tt))
+
+    # Weekday tokens — what days do sessions fall on?
+    days = _weekdays_in_text(combined)
+    if not days:
+        days = [d0.weekday()]
+    days.sort()
+
+    # Default duration
+    if weeks is None:
+        if is_biweekly:
+            weeks = 16          # standard Pilates/Reformer cert span
+        elif stream in {"PT", "Pilates", "Reformer"}:
+            weeks = 16
+        else:
+            weeks = 8
+
+    step_days = 14 if is_biweekly else 7
+    horizon = d0 + timedelta(weeks=weeks)
+
+    sessions: list[date] = []
+    for dow in days:
+        # First occurrence of this weekday on/after the start date
+        first = d0 + timedelta(days=(dow - d0.weekday()) % 7)
+        cur = first
+        while cur < horizon:
+            sessions.append(cur)
+            cur += timedelta(days=step_days)
+
+    return sorted(set(sessions))
+
+
+def attendance_export(group_id: str) -> dict:
+    """Build the attendance-sheet payload for a class group.
+
+    Returns:
+      {
+        label, stream, location, timetable, start_date,
+        session_dates: [date,...],
+        students: [{contact_id, name, email, phone, payment_status, status, ...}],
+      }
+    Returns None if the group doesn't exist.
+    """
+    g = group_detail(group_id)
+    if not g:
+        return None
+    sessions = _generate_session_dates(
+        g["stream"], g.get("timetable"), g["students"][0].get("qualification", ""),
+        g["start_date"]
+    )
+    return {
+        "group_id": group_id,
+        "label": g["label"],
+        "stream": g["stream"],
+        "location": g["location"],
+        "timetable": g.get("timetable") or "",
+        "qualification": g["students"][0].get("qualification", "") if g["students"] else "",
+        "start_date": g["start_date"],
+        "session_dates": sessions,
+        "students": [
+            {
+                "contact_id":     s["contact_id"],
+                "name":           s["name"],
+                "email":          s.get("email") or "",
+                "phone":          s.get("phone") or "",
+                "payment_status": s.get("payment_status") or "",
+                "status":         s.get("status") or "",
+            }
+            for s in g["students"]
+        ],
+    }
+
+
+def cert_export_groups(period: str) -> list[dict]:
+    """All cohorts eligible for cert export, grouped by stream for the UI picker."""
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT group_id, stream, location, start_date, timetable,
+                   COUNT(*) AS students,
+                   SUM(CASE WHEN cert_issued=1 THEN 1 ELSE 0 END) AS already_issued
+            FROM students
+            WHERE class_period = ? AND is_dropoff = 0
+            GROUP BY group_id ORDER BY start_date, stream, location
+        """, (period,)).fetchall()
+    out = []
+    for r in rs:
+        if r["stream"] not in CERT_EXPORT_STREAMS:
+            continue
+        d = dict(r)
+        d["label"] = friendly_group_label(r["stream"], r["location"],
+                                          r["start_date"], r["timetable"])
+        out.append(d)
+    return out
+
+
+def cert_export_rows(group_ids: list[str]) -> tuple[list[dict], int]:
+    """Per-student rows for a list of group_ids.
+
+    Returns (rows, max_quals) — max_quals is the widest qual count across all rows,
+    so the CSV writer can pad columns uniformly.
+    """
+    if not group_ids:
+        return [], 0
+    qmarks = ",".join("?" for _ in group_ids)
+    with get_db() as c:
+        rs = c.execute(f"""
+            SELECT contact_id, first_name, last_name, email, phone,
+                   stream, qualification, location, timetable, start_date, group_id
+            FROM students
+            WHERE group_id IN ({qmarks}) AND is_dropoff = 0
+            ORDER BY stream, location, start_date, last_name, first_name
+        """, group_ids).fetchall()
+    rows: list[dict] = []
+    max_quals = 0
+    for r in rs:
+        d = dict(r)
+        d["name"] = f"{d.get('first_name') or ''} {d.get('last_name') or ''}".strip()
+        d["quals"] = _split_quals(d["qualification"])
+        if len(d["quals"]) > max_quals:
+            max_quals = len(d["quals"])
+        rows.append(d)
+    return rows, max(max_quals, 1)
+
 
 def class_groups(period: str) -> list[dict]:
     with get_db() as c:
