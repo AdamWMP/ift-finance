@@ -1,0 +1,135 @@
+{% extends "_base.html" %}
+{% block title %}Revenue Audit · {{ period }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="location.href='/admin/audit?period='+this.value">
+    {% for p in available %}<option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+
+<section class="block">
+  <h2>Revenue audit · {{ period }}</h2>
+  <p class="muted small">
+    Every revenue source counted in the headline figures, plus the reconciliation
+    checks that confirm nothing is double-counted between students.spent,
+    sales-board categories, and the headline macro.
+    JSON view: <a href="/admin/audit.json?period={{ period }}">/admin/audit.json</a>
+  </p>
+</section>
+
+<section class="block">
+  <h2>Reconciliation checks</h2>
+  <div class="hero" style="grid-template-columns:repeat(2,1fr)">
+    <div class="card {% if a.checks.macro_matches_components %}accent{% endif %}"
+         style="border-left:4px solid {{ 'var(--good)' if a.checks.macro_matches_components else 'var(--bad)' }}">
+      <div class="label">macro.collected = students.spent + non-overlapping SB</div>
+      <div class="num">{% if a.checks.macro_matches_components %}✓ OK{% else %}✗ MISMATCH{% endif %}</div>
+      <div class="muted small">
+        €{{ "{:,.2f}".format(a.totals.headline_collected) }} ==
+        €{{ "{:,.2f}".format(a.totals.student_collected) }} +
+        €{{ "{:,.2f}".format(a.totals.sb_collected_kept) }}
+      </div>
+    </div>
+    <div class="card {% if a.checks.by_payment_method_matches_macro %}accent{% endif %}"
+         style="border-left:4px solid {{ 'var(--good)' if a.checks.by_payment_method_matches_macro else 'var(--bad)' }}">
+      <div class="label">'How money has come in' total = macro.collected</div>
+      <div class="num">{% if a.checks.by_payment_method_matches_macro %}✓ OK{% else %}✗ MISMATCH{% endif %}</div>
+      <div class="muted small">
+        €{{ "{:,.2f}".format(a.totals.payment_method_total) }} ==
+        €{{ "{:,.2f}".format(a.totals.headline_collected) }}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>Students (live ONtraport data)</h2>
+  <table class="bars">
+    <thead><tr><th>Stream</th><th>Contacts</th><th class="vals">Expected</th><th class="vals">Collected</th></tr></thead>
+    {% for s in a.streams %}
+    <tr>
+      <td class="name">{{ s.stream }}</td>
+      <td>{{ s.contacts }}</td>
+      <td class="vals">€{{ "{:,.0f}".format(s.expected) }}</td>
+      <td class="vals">€{{ "{:,.0f}".format(s.collected) }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--line);font-weight:700">
+      <td class="name">Subtotal</td><td></td>
+      <td class="vals">€{{ "{:,.0f}".format(a.totals.student_expected) }}</td>
+      <td class="vals">€{{ "{:,.0f}".format(a.totals.student_collected) }}</td>
+    </tr>
+  </table>
+</section>
+
+<section class="block">
+  <h2>Sales Board categories</h2>
+  <p class="muted small">
+    Categories marked <b>excluded</b> are filtered out of headline totals because
+    the same revenue is already counted on the Students side. Overlap detection
+    is dynamic: a category is excluded only if its matching stream has paid
+    student rows in this period.
+  </p>
+  <table class="bars">
+    <thead><tr><th>Category</th><th class="vals">Amount</th><th>In totals?</th><th>Reason</th></tr></thead>
+    {% for c in a.sales_board %}
+    <tr style="{% if c.excluded %}opacity:.55{% endif %}">
+      <td class="name">{{ c.category }}</td>
+      <td class="vals">€{{ "{:,.0f}".format(c.amount) }}</td>
+      <td>{% if c.excluded %}<span style="color:var(--bad)">Excluded</span>{% else %}<span style="color:var(--good)">Kept</span>{% endif %}</td>
+      <td class="muted small">{{ c.reason }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--line);font-weight:700">
+      <td class="name">Kept in totals</td>
+      <td class="vals">€{{ "{:,.0f}".format(a.totals.sb_collected_kept) }}</td>
+      <td colspan="2" class="muted small">
+        Excluded (anti-double-count): €{{ "{:,.0f}".format(a.totals.sb_collected_excluded) }}
+      </td>
+    </tr>
+  </table>
+</section>
+
+<section class="block">
+  <h2>Manual transactions (cash, bank transfer, DSP, etc.)</h2>
+  <p class="muted small">
+    Manually-entered payments tagged to a contact. These don't add to the
+    headline total — they only re-allocate that contact's existing spent
+    from the default method (Stripe) to the recorded one, so no double-count.
+  </p>
+  <div class="hero" style="grid-template-columns:repeat(1,1fr)">
+    <div class="card">
+      <div class="label">Manual transactions in</div>
+      <div class="num">€{{ "{:,.0f}".format(a.manual_in) }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>Headline totals (the numbers on /board)</h2>
+  <div class="hero" style="grid-template-columns:repeat(4,1fr)">
+    <div class="card">
+      <div class="label">Expected (Fees due)</div>
+      <div class="num">€{{ "{:,.0f}".format(a.totals.headline_expected) }}</div>
+    </div>
+    <div class="card accent">
+      <div class="label">Collected (Fees paid)</div>
+      <div class="num">€{{ "{:,.0f}".format(a.totals.headline_collected) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Students subtotal</div>
+      <div class="num">€{{ "{:,.0f}".format(a.totals.student_collected) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Sales Board (kept)</div>
+      <div class="num">€{{ "{:,.0f}".format(a.totals.sb_collected_kept) }}</div>
+    </div>
+  </div>
+</section>
+
+{% endblock %}

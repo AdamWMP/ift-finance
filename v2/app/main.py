@@ -310,6 +310,19 @@ def admin_attendance_export(group_id: str):
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+@app.get("/admin/audit", response_class=HTMLResponse)
+def admin_audit(request: Request, period: str = "S26"):
+    return templates.TemplateResponse("audit.html", {
+        "request": request, "period": period,
+        "available": queries.periods_with_data() or [period],
+        "a": queries.revenue_audit(period),
+    })
+
+@app.get("/admin/audit.json")
+def admin_audit_json(period: str = "S26"):
+    return queries.revenue_audit(period)
+
+
 @app.get("/admin/activity", response_class=HTMLResponse)
 def admin_activity(request: Request,
                    q: str = "", days: int = 30, status: str = "",

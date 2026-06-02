@@ -335,17 +335,55 @@ def manual_transactions_summary(period: str | None = None) -> dict:
         by_cat[key] = by_cat.get(key, 0) + r["amount"]
     return {"count": len(rows), "in": in_total, "out": out_total, "by_cat": by_cat}
 
-# Categories that overlap with raw_students (Pilates / PT) — counted there
-# already, so MUST NOT be re-added to macro.collected. They still appear in
-# the per-stream / per-method breakdowns for visibility, just not in totals.
+# Sales Board categories whose revenue is *also* tracked in raw_students. If a
+# stream has live student rows for the period in question, including the SB
+# amount as well would double-count the same money. We exclude the SB side
+# dynamically — see _overlapping_categories_for(period).
 #
-# NOTE: Once we confirm the follow-on-stream live ingest is producing real
-# `spent` values per contact (i.e. ONtraport rollup fields f2322/f2327/f2333/
-# f2599/f2617 are populated end-to-end), the SB categories below should be
-# added back here so we stop double-counting. Until then, keep the SB amounts
-# in totals — better to slightly over-count for now than to silently drop
-# follow-on revenue from the "Money in" / "Fees paid" headline figures.
-OVERLAPPING_SB_CATEGORIES = {"online_pilates", "tesg_grants", "iftg_global"}
+# Static "always overlap" set: Pilates Online sales hit students.spent for
+# Online cohorts, and TESG / IFTG grants are bundled flows that always run
+# through PT or Pilates already.
+ALWAYS_OVERLAPPING_SB = {"online_pilates", "tesg_grants", "iftg_global"}
+
+# Mapping from Sales Board category → the stream key it corresponds to in the
+# students table. Used by _overlapping_categories_for to decide which SB
+# categories should be excluded for a given period based on whether that stream
+# has live student data.
+SB_CATEGORY_TO_STREAM = {
+    "reformer":       "Reformer",
+    "sc_dublin":      "S&C",
+    "sc_galway":      "S&C",
+    "pre_post_natal": "PPN",
+    "fba":            "FBA",
+    "nutricert":      "AN",  # NutriCert was merged into AN per Adam's call
+}
+
+# Kept as a name purely for backwards compatibility with anything that imports
+# it — but it's no longer the source of truth for overlap logic, which is now
+# computed per-period.
+OVERLAPPING_SB_CATEGORIES = ALWAYS_OVERLAPPING_SB
+
+
+def _overlapping_categories_for(period: str) -> set[str]:
+    """The set of Sales Board categories to exclude from totals for `period`.
+
+    Static "always-overlapping" categories are always included. Stream-mapped
+    categories are included only if the matching stream has *paid* student
+    rows in this period (i.e. ONtraport rollups have actually populated the
+    `spent` field). This way we automatically stop double-counting once the
+    live data is reliable, and gracefully keep the SB total until then.
+    """
+    with get_db() as c:
+        live = {r["stream"] for r in c.execute("""
+            SELECT DISTINCT stream FROM students
+            WHERE revenue_period=? AND is_dropoff=0 AND COALESCE(spent,0) > 0
+        """, (period,)).fetchall()}
+    out = set(ALWAYS_OVERLAPPING_SB)
+    for cat, stream in SB_CATEGORY_TO_STREAM.items():
+        if stream in live:
+            out.add(cat)
+    return out
+
 
 def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -> dict[str, float]:
     with get_db() as c:
@@ -357,7 +395,8 @@ def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -
         """, (period,)).fetchall()
     out = {r["category"]: r["amt"] or 0 for r in rs}
     if exclude_overlapping:
-        out = {k: v for k, v in out.items() if k not in OVERLAPPING_SB_CATEGORIES}
+        skip = _overlapping_categories_for(period)
+        out = {k: v for k, v in out.items() if k not in skip}
     return out
 
 def macro(period: str) -> dict:
@@ -1174,6 +1213,82 @@ def simon_panel(period: str) -> dict:
         "money_in": money_in_rows,
         "history": monthly,
         "deltas": deltas,
+    }
+
+
+# --- Audit / double-count check ---------------------------------------------
+# Show every source of revenue for a period and how they combine into the
+# headline figures. Cross-checks: macro.collected should equal student-sum +
+# SB-non-overlapping. by_payment_method total should also equal that.
+
+def revenue_audit(period: str) -> dict:
+    """Return a full breakdown of where the headline 'collected' for `period`
+    comes from, including which Sales Board categories were excluded and why.
+    Use the /admin/audit page to inspect."""
+    with get_db() as c:
+        per_stream = c.execute("""
+            SELECT stream,
+                   COUNT(*)                 AS contacts,
+                   COALESCE(SUM(price),0)   AS expected,
+                   COALESCE(SUM(spent),0)   AS collected
+            FROM students
+            WHERE revenue_period=? AND is_dropoff=0
+            GROUP BY stream ORDER BY collected DESC
+        """, (period,)).fetchall()
+        all_sb = c.execute("""
+            SELECT category, COALESCE(SUM(amount),0) AS amt
+            FROM transactions
+            WHERE period=? AND direction='in' AND source='sales_board'
+            GROUP BY category ORDER BY amt DESC
+        """, (period,)).fetchall()
+        manual_in = c.execute("""
+            SELECT COALESCE(SUM(amount),0) AS amt
+            FROM transactions
+            WHERE period=? AND direction='in' AND source='manual'
+        """, (period,)).fetchone()
+    overlap = _overlapping_categories_for(period)
+    stream_rows = [dict(r) for r in per_stream]
+    sb_rows = [{"category": r["category"], "amount": r["amt"] or 0,
+                "excluded": r["category"] in overlap,
+                "reason": ("static overlap" if r["category"] in ALWAYS_OVERLAPPING_SB
+                           else (f"overlaps with {SB_CATEGORY_TO_STREAM[r['category']]} student rows"
+                                 if r["category"] in overlap else "—"))}
+               for r in all_sb]
+
+    student_collected = sum(r["collected"] for r in stream_rows)
+    student_expected  = sum(r["expected"]  for r in stream_rows)
+    sb_collected_all  = sum(r["amount"] for r in sb_rows)
+    sb_collected_kept = sum(r["amount"] for r in sb_rows if not r["excluded"])
+    sb_collected_skip = sum(r["amount"] for r in sb_rows if r["excluded"])
+
+    m = macro(period)
+    by_meth = by_payment_method(period)
+    payment_method_total = sum(r["collected"] for r in by_meth)
+
+    return {
+        "period": period,
+        "streams":      stream_rows,
+        "sales_board":  sb_rows,
+        "manual_in":    manual_in["amt"] or 0,
+        "totals": {
+            "student_expected":      student_expected,
+            "student_collected":     student_collected,
+            "sb_collected_all":      sb_collected_all,
+            "sb_collected_kept":     sb_collected_kept,
+            "sb_collected_excluded": sb_collected_skip,
+            "headline_collected":    m["collected"],
+            "headline_expected":     m["expected"],
+            "payment_method_total":  payment_method_total,
+        },
+        "checks": {
+            # macro.collected == students.spent + non-overlapping SB
+            "macro_matches_components":
+                round(m["collected"], 2) == round(student_collected + sb_collected_kept, 2),
+            "by_payment_method_matches_macro":
+                round(payment_method_total, 2) == round(m["collected"], 2),
+        },
+        "overlap_set": sorted(overlap),
+        "always_overlap": sorted(ALWAYS_OVERLAPPING_SB),
     }
 
 
