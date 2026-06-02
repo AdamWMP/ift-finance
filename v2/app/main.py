@@ -321,6 +321,21 @@ def admin_attendance_export(group_id: str):
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+@app.post("/admin/import-a25")
+def admin_import_a25(request: Request):
+    """One-shot: load v2/app/a25_seed.json into the students table as A25 rows.
+    Idempotent — re-running re-upserts the same rows."""
+    from .ingest import import_period_seed
+    seed_path = HERE / "a25_seed.json"
+    result = import_period_seed(str(seed_path), force_period="A25")
+    referer = request.headers.get("referer") or "/board?period=A25"
+    if result.get("ok"):
+        from urllib.parse import urlencode
+        sep = "&" if "?" in referer else "?"
+        referer = f"{referer}{sep}{urlencode({'imported': 'A25', 'n': result['students_upserted']})}"
+    return RedirectResponse(url=referer, status_code=303)
+
+
 @app.get("/admin/audit", response_class=HTMLResponse)
 def admin_audit(request: Request, period: str = "S26"):
     return templates.TemplateResponse("audit.html", {

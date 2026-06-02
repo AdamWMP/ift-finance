@@ -12,6 +12,20 @@
 
 {% block main %}
 
+<section class="block" style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
+  <form method="post" action="/admin/import-a25">
+    <button type="submit" class="csv-btn"
+            title="Imports A25 PT + Pilates students from the bundled JSON seed (~333 students). Idempotent — safe to re-run.">
+      ⬆ Import A25 historical data (one-shot)
+    </button>
+  </form>
+  {% if request.query_params.get('imported') %}
+  <p class="muted small" style="color:var(--good)">
+    ✓ Imported {{ request.query_params.get('n') }} students into {{ request.query_params.get('imported') }}.
+  </p>
+  {% endif %}
+</section>
+
 <section class="block">
   <h2>Revenue audit · {{ period }}</h2>
   <p class="muted small">

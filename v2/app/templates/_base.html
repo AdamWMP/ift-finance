@@ -29,6 +29,8 @@
          class="navlink {% if request.url.path.startswith('/admin/transactions') %}active{% endif %}">Transactions</a>
       <a href="/admin/cert-export{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
          class="navlink {% if request.url.path.startswith('/admin/cert-export') %}active{% endif %}">Cert Export</a>
+      <a href="/admin/audit{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
+         class="navlink {% if request.url.path.startswith('/admin/audit') %}active{% endif %}">Audit</a>
     </nav>
   </div>
   {% block term_switcher %}{% endblock %}

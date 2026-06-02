@@ -2,7 +2,7 @@
 Run: python -m app.ingest
 """
 from __future__ import annotations
-import csv, re
+import csv, re, sys
 from pathlib import Path
 
 from .db import DATA_DIR, DB_PATH, get_db, init_db, parse_date, period_for, pathway_for, normalize_location
@@ -147,5 +147,102 @@ def ingest_csv():
                 ins += 1
         print(f"upserted {ins} student×stream rows → {DB_PATH.name}")
 
+
+# --- Historical-term JSON seed import ---------------------------------------
+# Used for back-loading prior terms (A25 etc.) whose contacts aren't
+# discoverable via the current ONtraport year-filter. The seed file is built
+# by scripts/build_a25_seed.py from the historical Excel reports.
+
+def import_period_seed(seed_path: Path | str, *, force_period: str | None = None) -> dict:
+    """Load a {period, students, method_overrides} JSON seed and upsert its
+    student rows into the students table.
+
+    `force_period` overrides revenue_period for every row (useful for A25
+    where the source data already represents the term and we want to stamp
+    everything with revenue_period='A25' regardless of start_date).
+    """
+    import json
+    p = Path(seed_path)
+    if not p.exists():
+        return {"ok": False, "error": f"seed not found: {p}"}
+    seed = json.loads(p.read_text())
+    period = force_period or seed.get("period") or ""
+
+    init_db()
+    n_students, n_overrides = 0, 0
+    with get_db() as c:
+        for r in seed.get("students", []):
+            qual     = r.get("qualification", "") or ""
+            stream   = r.get("stream", "PT")
+            location = normalize_location(r.get("location", "") or "")
+            if location.lower() == "online" or "launchpad" in qual.lower():
+                location = "Online"
+            start_iso = r.get("start_date", "") or ""
+            start_d   = parse_date(start_iso) if start_iso else None
+            cls_period= period_for(start_d) if start_d else period
+            # Seed override: revenue_period is the term we're seeding
+            rev_period= period or cls_period
+            if r.get("is_deferral"):
+                rev_period = ""  # money belongs to original term
+            price = float(r.get("price", 0) or 0)
+            spent = float(r.get("spent", 0) or 0)
+            method = (r.get("payment_method", "") or "").strip() \
+                     or ("Stripe" if (price > 0 or spent > 0) else "")
+            plan = r.get("payment_plan", "") or ""
+            c.execute("""
+                INSERT INTO students (
+                    contact_id, first_name, last_name, email, phone,
+                    stream, qualification, location, start_date, timetable,
+                    price, spent, payment_plan, payment_method, pathway,
+                    group_id, class_period, revenue_period,
+                    is_deferral, is_dropoff, is_grant, payment_status
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(contact_id, stream) DO UPDATE SET
+                    first_name=excluded.first_name, last_name=excluded.last_name,
+                    email=excluded.email, phone=excluded.phone,
+                    qualification=excluded.qualification, location=excluded.location,
+                    start_date=excluded.start_date, timetable=excluded.timetable,
+                    price=excluded.price, spent=excluded.spent,
+                    payment_plan=excluded.payment_plan, payment_method=excluded.payment_method,
+                    pathway=excluded.pathway, group_id=excluded.group_id,
+                    class_period=excluded.class_period, revenue_period=excluded.revenue_period,
+                    is_deferral=excluded.is_deferral, is_grant=excluded.is_grant,
+                    payment_status=excluded.payment_status
+            """, (
+                r["contact_id"], r.get("first_name", ""), r.get("last_name", ""),
+                r.get("email", ""), r.get("phone", ""),
+                stream, qual, location, start_iso, r.get("timetable", ""),
+                price, spent, plan, method,
+                pathway_for(qual, stream),
+                group_id(stream, location, start_iso), cls_period, rev_period,
+                int(r.get("is_deferral", 0)), 0, 1 if is_grant(plan) else 0,
+                derive_payment_status(price, spent),
+            ))
+            n_students += 1
+
+        # Drop and rewrite this term's seed-method overrides so re-import is
+        # idempotent. Tagged with note containing 'A25 Finance Report'.
+        c.execute("""DELETE FROM transactions
+                     WHERE source='manual' AND period=?
+                       AND note LIKE '%Finance Report%'""", (period,))
+        for o in seed.get("method_overrides", []):
+            c.execute("""
+                INSERT INTO transactions
+                    (date, period, direction, category, subcategory, amount,
+                     contact_id, source, status, note)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (o.get("date") or "2025-09-01", period, "in", "course_sale",
+                  o.get("method", ""), float(o.get("amount") or 0),
+                  o.get("contact_id", ""), "manual", "paid",
+                  o.get("note", "")))
+            n_overrides += 1
+    return {"ok": True, "period": period,
+            "students_upserted": n_students,
+            "method_overrides_loaded": n_overrides}
+
+
 if __name__ == "__main__":
-    ingest_csv()
+    if len(sys.argv) > 1 and sys.argv[1] == "seed":
+        print(import_period_seed(sys.argv[2]))
+    else:
+        ingest_csv()
