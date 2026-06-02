@@ -69,12 +69,52 @@ def extract(period: str = "S26") -> list[dict]:
     return out
 
 def write_transactions(period: str = "S26") -> int:
-    items = extract(period)
+    """Refresh the sales_board transactions for `period` from the live sheet.
+
+    Defensive against transient zero/empty returns: if a cell comes back as 0
+    but had a non-zero value last sync, we keep the previous amount. This
+    stops the sales-target pill from jumping (e.g. 197 → 178 → 197) when the
+    sheet is briefly recalculating, the Apps Script times out partway through,
+    or a single cell flashes #N/A. Drops > 25% of total are logged as warnings
+    but still written — we never silently undercount real revenue.
+    """
+    new_items = extract(period)
     today = date.today().isoformat()
+    with get_db() as c:
+        prev = {r["category"]: r["amount"] for r in c.execute(
+            "SELECT category, amount FROM transactions "
+            "WHERE source='sales_board' AND period=?",
+            (period,)
+        ).fetchall()}
+    merged: list[dict] = []
+    warnings: list[str] = []
+    for it in new_items:
+        old_amt = float(prev.get(it["category"], 0) or 0)
+        new_amt = float(it["amount"] or 0)
+        if new_amt > 0:
+            chosen = new_amt
+        elif old_amt > 0:
+            # Cell returned 0/empty but we had a real value before — keep it
+            chosen = old_amt
+            warnings.append(
+                f"{it['cell']} {it['category']}: returned 0 — preserving "
+                f"previous €{old_amt:,.2f}"
+            )
+        else:
+            chosen = 0.0
+        merged.append({**it, "amount": chosen})
+    new_total = sum(m["amount"] for m in merged)
+    old_total = sum(prev.values())
+    if old_total > 100 and new_total < old_total * 0.75:
+        warnings.append(
+            f"Sales Board total fell by "
+            f"{(1 - new_total/old_total) * 100:.0f}% "
+            f"(€{old_total:,.0f} → €{new_total:,.0f}); writing the merged values"
+        )
     n = 0
     with get_db() as c:
         c.execute("DELETE FROM transactions WHERE source='sales_board' AND period=?", (period,))
-        for it in items:
+        for it in merged:
             if it["amount"] <= 0: continue
             c.execute("""
                 INSERT INTO transactions
@@ -85,6 +125,8 @@ def write_transactions(period: str = "S26") -> int:
                   it["amount"], "", "sales_board", "paid",
                   f"sales_board {period} {it['cell']}"))
             n += 1
+    for w in warnings:
+        print(f"  ⚠ sales_board: {w}", flush=True)
     return n
 
 def push_live_money_in(period: str = "S26", cell: str = "L18") -> dict:

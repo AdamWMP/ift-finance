@@ -552,17 +552,28 @@ def sales_summary(period: str) -> dict:
     reference but doesn't drive the bar.
     """
     with get_db() as c:
-        r = c.execute("""
+        # Active-only counts feed `potential_sales` / `expected` (drop-offs can't
+        # contribute more — they've left).
+        active = c.execute("""
             SELECT COUNT(DISTINCT contact_id) AS actual_paying,
                    COUNT(DISTINCT contact_id) FILTER (WHERE qualification != '') AS potential,
-                   COALESCE(SUM(spent),0) AS rs_collected,
-                   COALESCE(SUM(price),0) AS rs_expected
+                   COALESCE(SUM(price),0)     AS rs_expected
             FROM students
             WHERE revenue_period = ? AND is_dropoff = 0
         """, (period,)).fetchone()
+        # `collected` includes drop-off `spent` — drop-offs DID pay some money
+        # before leaving, and that money is real revenue. Matches Total Fees
+        # Paid on the hero card so the bar and the headline reconcile.
+        all_paid = c.execute("""
+            SELECT COALESCE(SUM(spent),0) AS spent_all
+            FROM students WHERE revenue_period = ?
+        """, (period,)).fetchone()
     sb_extra = sum(_sales_board_by_category(period).values())
-    collected = (r["rs_collected"] or 0) + sb_extra
-    expected  = (r["rs_expected"]  or 0) + sb_extra
+    collected = (all_paid["spent_all"] or 0) + sb_extra   # = fees_summary.total.paid
+    expected  = (active["rs_expected"] or 0) + sb_extra   # active-only
+    # Backwards-compat alias for downstream that still uses `r`-style keys
+    r = {"actual_paying": active["actual_paying"], "potential": active["potential"],
+         "rs_collected":  collected - sb_extra, "rs_expected": active["rs_expected"]}
     sales = round(collected / SALE_VALUE, 1)
     expected_sales = round(expected / SALE_VALUE, 1)
 
