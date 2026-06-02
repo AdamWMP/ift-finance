@@ -23,6 +23,8 @@
          class="navlink {% if request.url.path.startswith('/admin/chase') %}active{% endif %}">Debt Collection View</a>
       <a href="/admin/work{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
          class="navlink {% if request.url.path.startswith('/admin/work') %}active{% endif %}">Admin Work</a>
+      <a href="/admin/activity"
+         class="navlink {% if request.url.path.startswith('/admin/activity') %}active{% endif %}">Activity</a>
       <a href="/admin/transactions{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
          class="navlink {% if request.url.path.startswith('/admin/transactions') %}active{% endif %}">Transactions</a>
       <a href="/admin/cert-export{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"

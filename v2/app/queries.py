@@ -327,19 +327,17 @@ def manual_transactions_summary(period: str | None = None) -> dict:
         by_cat[key] = by_cat.get(key, 0) + r["amount"]
     return {"count": len(rows), "in": in_total, "out": out_total, "by_cat": by_cat}
 
-# Categories that overlap with raw_students — counted there already, so MUST
-# NOT be re-added to macro.collected. They still appear in the per-stream /
-# per-method breakdowns for visibility, just not in totals.
+# Categories that overlap with raw_students (Pilates / PT) — counted there
+# already, so MUST NOT be re-added to macro.collected. They still appear in
+# the per-stream / per-method breakdowns for visibility, just not in totals.
 #
-# With the follow-on-stream ingest live (S&C / PPN / AN / FBA / Reformer have
-# their own rows in `students`), the Sales Board categories for those streams
-# are now also overlapping. We exclude them from totals here while keeping
-# them in the by-stream view as a sanity-check until the live data is trusted
-# end-to-end — then drop these categories entirely.
-OVERLAPPING_SB_CATEGORIES = {
-    "online_pilates", "tesg_grants", "iftg_global",
-    "reformer", "sc_dublin", "sc_galway", "pre_post_natal", "fba", "nutricert",
-}
+# NOTE: Once we confirm the follow-on-stream live ingest is producing real
+# `spent` values per contact (i.e. ONtraport rollup fields f2322/f2327/f2333/
+# f2599/f2617 are populated end-to-end), the SB categories below should be
+# added back here so we stop double-counting. Until then, keep the SB amounts
+# in totals — better to slightly over-count for now than to silently drop
+# follow-on revenue from the "Money in" / "Fees paid" headline figures.
+OVERLAPPING_SB_CATEGORIES = {"online_pilates", "tesg_grants", "iftg_global"}
 
 def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -> dict[str, float]:
     with get_db() as c:
@@ -1168,6 +1166,97 @@ def simon_panel(period: str) -> dict:
         "money_in": money_in_rows,
         "history": monthly,
         "deltas": deltas,
+    }
+
+
+# --- Recent transactions / invoice activity feed ----------------------------
+# A searchable list of invoice-level money events: closed, declined, in
+# collections, etc. Used as the "what just happened" feed when board members
+# ask "show me where this €X came from".
+
+def recent_transactions(*, q: str = "", days: int = 30, status: str = "",
+                         stream: str = "", limit: int = 500) -> dict:
+    """List invoices joined to student bio, filtered by free-text query +
+    optional date window / status / stream.
+
+    `q` matches against name (case-insensitive substring), email, contact_id,
+    and invoice id. Returns the most recent matches first.
+    """
+    args: list = []
+    where_parts = ["1=1"]
+    # Date window — keyed on closed_date when present, else invoice_date.
+    if days and days > 0:
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        where_parts.append(
+            "(COALESCE(i.closed_date, i.invoice_date, '') >= ?)"
+        )
+        args.append(cutoff)
+    if status:
+        # Accept either a status name ("Closed", "Declined") or a status_code int
+        try:
+            code = int(status)
+            where_parts.append("i.status_code = ?")
+            args.append(code)
+        except ValueError:
+            where_parts.append("i.status = ?")
+            args.append(status)
+    if stream:
+        where_parts.append("s.stream = ?")
+        args.append(stream)
+    if q:
+        like = f"%{q.strip()}%"
+        where_parts.append("""(
+            COALESCE(s.first_name,'') LIKE ? OR
+            COALESCE(s.last_name,'')  LIKE ? OR
+            COALESCE(s.email,'')      LIKE ? OR
+            i.contact_id              LIKE ? OR
+            CAST(i.id AS TEXT)        LIKE ?
+        )""")
+        args.extend([like, like, like, like, like])
+    where_sql = " AND ".join(where_parts)
+    sql = f"""
+        SELECT i.id          AS invoice_id,
+               i.contact_id,
+               i.status_code, i.status,
+               i.total, i.total_paid, i.balance,
+               i.invoice_date, i.closed_date, i.due_date,
+               i.last_recharge_date, i.recharge_attempts,
+               s.first_name, s.last_name, s.email, s.phone,
+               s.stream, s.location, s.start_date, s.group_id,
+               s.revenue_period
+        FROM invoices i
+        LEFT JOIN students s ON s.contact_id = i.contact_id
+        WHERE {where_sql}
+        ORDER BY COALESCE(i.closed_date, i.invoice_date) DESC, i.id DESC
+        LIMIT ?
+    """
+    args.append(limit)
+    with get_db() as c:
+        rows = c.execute(sql, args).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["name"] = f"{d.get('first_name') or ''} {d.get('last_name') or ''}".strip() \
+                    or f"Contact {d['contact_id']}"
+        d["display_date"] = d["closed_date"] or d["invoice_date"] or ""
+        d["ontraport_invoice_url"] = f"https://app.ontraport.com/#!/invoice/edit&id={d['invoice_id']}"
+        d["ontraport_contact_url"] = f"https://app.ontraport.com/#!/contact/edit&id={d['contact_id']}"
+        out.append(d)
+    # Summary roll-up of what's in the result set
+    summary = {
+        "count": len(out),
+        "total_paid":   sum((r["total_paid"] or 0) for r in out),
+        "total_value":  sum((r["total"] or 0)      for r in out),
+        "balance_open": sum((r["balance"] or 0)    for r in out),
+        "by_status":    {},
+    }
+    for r in out:
+        st = r["status"] or "—"
+        summary["by_status"][st] = summary["by_status"].get(st, 0) + 1
+    return {
+        "rows": out,
+        "summary": summary,
+        "filters": {"q": q, "days": days, "status": status, "stream": stream, "limit": limit},
     }
 
 

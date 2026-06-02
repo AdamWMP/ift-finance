@@ -310,6 +310,45 @@ def admin_attendance_export(group_id: str):
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+@app.get("/admin/activity", response_class=HTMLResponse)
+def admin_activity(request: Request,
+                   q: str = "", days: int = 30, status: str = "",
+                   stream: str = "", limit: int = 500):
+    """Searchable invoice activity feed — payments closed, declined, in
+    collections, etc. Use this when someone asks 'where did this €X come from'."""
+    data = queries.recent_transactions(q=q, days=days, status=status,
+                                       stream=stream, limit=limit)
+    return templates.TemplateResponse("activity.html", {
+        "request": request, "data": data,
+    })
+
+@app.get("/admin/activity.csv")
+def admin_activity_csv(q: str = "", days: int = 30, status: str = "",
+                       stream: str = "", limit: int = 5000):
+    """CSV export of the same filtered activity feed."""
+    import csv, io
+    from fastapi.responses import Response
+    data = queries.recent_transactions(q=q, days=days, status=status,
+                                       stream=stream, limit=limit)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["date", "invoice_id", "contact_id", "name", "email", "stream",
+                "location", "status", "total", "paid", "balance",
+                "due_date", "recharge_attempts", "revenue_period"])
+    for r in data["rows"]:
+        w.writerow([
+            r["display_date"], r["invoice_id"], r["contact_id"], r["name"],
+            r.get("email") or "", r.get("stream") or "", r.get("location") or "",
+            r["status"] or "", r["total"] or 0, r["total_paid"] or 0,
+            r["balance"] or 0, r.get("due_date") or "", r["recharge_attempts"] or 0,
+            r.get("revenue_period") or "",
+        ])
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    from datetime import date as _date
+    fname = f"ift-activity-{_date.today().isoformat()}.csv"
+    return Response(content=csv_bytes, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
 @app.get("/admin/cert-export", response_class=HTMLResponse)
 def admin_cert_export(request: Request, period: str = "S26"):
     return templates.TemplateResponse("cert_export.html", {

@@ -1,0 +1,136 @@
+{% extends "_base.html" %}
+{% block title %}Activity · IFT Finance{% endblock %}
+
+{% block main %}
+
+<section class="block">
+  <h2>Activity feed
+    <a class="csv-btn" style="margin-left:8px"
+       href="/admin/activity.csv?q={{ data.filters.q|urlencode }}&days={{ data.filters.days }}&status={{ data.filters.status|urlencode }}&stream={{ data.filters.stream|urlencode }}">⬇ CSV</a>
+  </h2>
+  <p class="muted small">
+    Every invoice event (payment closed, declined, in collections, refunded …)
+    sourced directly from ONtraport. Search by name, email, contact ID, or invoice ID.
+  </p>
+
+  <form method="get" action="/admin/activity" class="tx-form" style="margin-bottom:14px">
+    <div class="tx-grid">
+      <label>Search
+        <input name="q" value="{{ data.filters.q }}" placeholder="name · email · contact ID · invoice ID" autocomplete="off">
+      </label>
+      <label>Window (days)
+        <select name="days">
+          {% for d in [7, 14, 30, 60, 90, 180, 365] %}
+          <option value="{{ d }}" {% if data.filters.days == d %}selected{% endif %}>{{ d }} days</option>
+          {% endfor %}
+          <option value="9999" {% if data.filters.days > 365 %}selected{% endif %}>All time</option>
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="" {% if not data.filters.status %}selected{% endif %}>Any</option>
+          <option value="Closed"           {% if data.filters.status == 'Closed' %}selected{% endif %}>Paid (Closed)</option>
+          <option value="Declined"         {% if data.filters.status == 'Declined' %}selected{% endif %}>Declined</option>
+          <option value="Collections"      {% if data.filters.status == 'Collections' %}selected{% endif %}>Collections</option>
+          <option value="Open"             {% if data.filters.status == 'Open' %}selected{% endif %}>Open</option>
+          <option value="Pending"          {% if data.filters.status == 'Pending' %}selected{% endif %}>Pending</option>
+          <option value="Refunded"         {% if data.filters.status == 'Refunded' %}selected{% endif %}>Refunded</option>
+          <option value="Partially Refunded" {% if data.filters.status == 'Partially Refunded' %}selected{% endif %}>Partially Refunded</option>
+          <option value="Voided"           {% if data.filters.status == 'Voided' %}selected{% endif %}>Voided</option>
+        </select>
+      </label>
+      <label>Stream
+        <select name="stream">
+          <option value="" {% if not data.filters.stream %}selected{% endif %}>Any</option>
+          {% for s in ['PT','Pilates','Reformer','S&C','PPN','AN','FBA'] %}
+          <option value="{{ s }}" {% if data.filters.stream == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>&nbsp;
+        <button type="submit">Search</button>
+      </label>
+    </div>
+  </form>
+
+  <div class="hero" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="card">
+      <div class="label">Matching invoices</div>
+      <div class="num">{{ data.summary.count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total invoiced</div>
+      <div class="num">€{{ "{:,.0f}".format(data.summary.total_value) }}</div>
+    </div>
+    <div class="card accent">
+      <div class="label">Total paid</div>
+      <div class="num">€{{ "{:,.0f}".format(data.summary.total_paid) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Open balance</div>
+      <div class="num">€{{ "{:,.0f}".format(data.summary.balance_open) }}</div>
+    </div>
+  </div>
+
+  {% if data.summary.by_status %}
+  <div class="filterbar" style="margin-bottom:10px">
+    {% for st, n in data.summary.by_status.items() %}
+    <span class="chip">{{ st }} · {{ n }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <table class="students">
+    <thead><tr>
+      <th>Date</th>
+      <th>Name</th>
+      <th>Stream / Location</th>
+      <th>Status</th>
+      <th class="num">Total</th>
+      <th class="num">Paid</th>
+      <th class="num">Balance</th>
+      <th>Invoice</th>
+      <th>Contact</th>
+    </tr></thead>
+    <tbody>
+      {% for r in data.rows %}
+      <tr>
+        <td class="muted small">{{ r.display_date }}</td>
+        <td>
+          <div class="name">{{ r.name }}</div>
+          <div class="muted small">CID {{ r.contact_id }} · {{ r.email }}</div>
+        </td>
+        <td class="muted small">{{ r.stream or '—' }} · {{ r.location or '—' }}</td>
+        <td>
+          {% set s = r.status or '—' %}
+          {% set color =
+            'var(--good)' if s == 'Closed'
+            else 'var(--bad)' if s in ('Declined','Collections')
+            else 'var(--warn)' if s in ('Open','Pending','Refunded','Partially Refunded')
+            else 'var(--muted)' %}
+          <span style="color:{{ color }}">{{ s }}</span>
+          {% if r.recharge_attempts and r.recharge_attempts > 0 %}
+          <div class="muted small">{{ r.recharge_attempts }} attempt{{ '' if r.recharge_attempts == 1 else 's' }}</div>
+          {% endif %}
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(r.total or 0) }}</td>
+        <td class="num" style="color:var(--good)">€{{ "{:,.0f}".format(r.total_paid or 0) }}</td>
+        <td class="num" style="color:{{ 'var(--bad)' if (r.balance or 0) > 0 else 'inherit' }}">€{{ "{:,.0f}".format(r.balance or 0) }}</td>
+        <td><a class="btn" href="{{ r.ontraport_invoice_url }}" target="_blank" rel="noopener" title="Open invoice in ONtraport">#{{ r.invoice_id }} ↗</a></td>
+        <td><a class="btn" href="{{ r.ontraport_contact_url }}" target="_blank" rel="noopener">↗</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">No matching invoices in this window.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if data.rows|length >= data.filters.limit %}
+  <p class="muted small" style="margin-top:8px">
+    Showing first {{ data.filters.limit }} matches. Narrow the search or widen the window to refine.
+  </p>
+  {% endif %}
+
+</section>
+
+{% endblock %}
