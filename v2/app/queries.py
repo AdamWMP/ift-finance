@@ -1119,11 +1119,13 @@ def simon_panel(period: str) -> dict:
     """One-screen board-level snapshot: per-segment fees and sales, plus a
     'what & when has money come in' history pulled from the snapshots table.
 
-    Segments:
-      • TOTAL — everything in the current revenue_period (incl. sales board)
-      • COMBO — contacts enrolled in BOTH PT and Pilates streams
-      • PILATES — Pilates-only contacts (excludes combo)
-      • ONLINE/BELFAST — location in ('Online','Derry') OR stream-pathway 'Online'
+    Segments (per Adam's definitions — these are highlight buckets, not a
+    partition; a contact can count in more than one):
+      • TOTAL  — everything in the current revenue_period (incl. sales board)
+      • COMBO  — anything PT-related (every contact with a PT row)
+      • PILATES — anything Pilates-related (Pilates + Reformer rows)
+      • ONLINE/BELFAST — Online location, Derry (renamed Belfast), or an
+                         Online pathway
     """
     # TOTAL: reuse macro() so sales-board categories are included
     m = macro(period)
@@ -1135,29 +1137,13 @@ def simon_panel(period: str) -> dict:
         "remaining_sales": max(round((m["expected"] - m["collected"]) / SALE_VALUE, 1), 0),
     }
 
-    # COMBO: contacts that have BOTH a PT row and a Pilates row in this period.
-    with get_db() as c:
-        combo_ids_rows = c.execute("""
-            SELECT contact_id
-            FROM students
-            WHERE revenue_period=? AND is_dropoff=0 AND stream IN ('PT','Pilates')
-            GROUP BY contact_id
-            HAVING COUNT(DISTINCT stream) = 2
-        """, (period,)).fetchall()
-        combo_ids = [r["contact_id"] for r in combo_ids_rows]
-    if combo_ids:
-        qmarks = ",".join("?" for _ in combo_ids)
-        combo = _segment_fees(period, f"AND contact_id IN ({qmarks})", tuple(combo_ids))
-    else:
-        combo = _segment_fees(period, "AND 1=0", ())
+    # COMBO = anything PT-related (every contact with a PT stream row).
+    combo = _segment_fees(period, "AND stream='PT'", ())
 
-    # PILATES standalone: stream=Pilates AND contact NOT in combo set
-    if combo_ids:
-        qmarks = ",".join("?" for _ in combo_ids)
-        pilates = _segment_fees(period,
-            f"AND stream='Pilates' AND contact_id NOT IN ({qmarks})", tuple(combo_ids))
-    else:
-        pilates = _segment_fees(period, "AND stream='Pilates'", ())
+    # PILATES = anything Pilates-related — Pilates + Reformer (reformer is a
+    # Pilates variant from a business-grouping point of view).
+    pilates = _segment_fees(period,
+        "AND stream IN ('Pilates','Reformer')", ())
 
     # ONLINE/BELFAST: Online location, Derry (renamed from Belfast), or anything
     # whose pathway has "Online" in it (covers Online combo pathways).

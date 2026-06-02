@@ -18,6 +18,7 @@
     <h2>Board snapshot · {{ period }}</h2>
     <div class="sales-meta muted">
       Per-segment fees + sales-equivalent — designed for board-level read at a glance.
+      Segments overlap (a PT-Online student counts in both COMBO and ONLINE/BELFAST) — they're highlight buckets, not a partition of TOTAL.
       {% if simon.prev_period %}<br>% Change is vs <b>{{ simon.prev_period }}</b> at the equivalent point.{% endif %}
     </div>
   </div>
