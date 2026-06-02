@@ -118,30 +118,50 @@ def search(q: str, limit: int = 12) -> list[dict]:
 
 def today_panel(period: str | None = None) -> dict:
     """Activity windows: today, last 7 days. New sales = contacts whose
-    very first invoice falls in the window."""
+    very first invoice falls in the window.
+
+    Period-scoped: every figure is filtered to contacts whose revenue_period
+    matches `period`. This stops S26 invoice activity leaking onto the A25
+    view (and vice-versa). When period is None, no scoping — useful for an
+    "all activity" debug pull but not what the dashboard uses.
+    """
     today_iso = date.today().isoformat()
     week_ago  = (date.today() - timedelta(days=7)).isoformat()
+
+    # Build a reusable JOIN/WHERE fragment for period-scoping. Note we use
+    # EXISTS rather than JOIN so an invoice without a student row (e.g. a
+    # corporate B2B) is consistently excluded once period is set.
+    if period:
+        period_filter = (
+            " AND EXISTS (SELECT 1 FROM students s "
+            "             WHERE s.contact_id = invoices.contact_id "
+            "               AND s.revenue_period = ?)"
+        )
+        period_args = (period,)
+    else:
+        period_filter = ""
+        period_args = ()
+
     with get_db() as c:
-        # Payments closed today + last 7d.
-        # Fall back to invoice_date when closed_date isn't populated — a chunk
-        # of ONtraport's Closed invoices ship with closed_date NULL, and the
-        # strict-equality filter on closed_date was silently dropping them
-        # (~€16k/wk gap vs the Activity feed cross-check).
-        paid_today = c.execute("""
+        # Payments closed today + last 7d (period-scoped)
+        paid_today = c.execute(f"""
             SELECT COUNT(*) AS n, COALESCE(SUM(total_paid),0) AS amt
             FROM invoices
             WHERE status_code=1
               AND COALESCE(closed_date, invoice_date, '') = ?
-        """, (today_iso,)).fetchone()
-        paid_week = c.execute("""
+              {period_filter}
+        """, (today_iso, *period_args)).fetchone()
+        paid_week = c.execute(f"""
             SELECT COUNT(*) AS n, COALESCE(SUM(total_paid),0) AS amt
             FROM invoices
             WHERE status_code=1
               AND COALESCE(closed_date, invoice_date, '') >= ?
-        """, (week_ago,)).fetchone()
+              {period_filter}
+        """, (week_ago, *period_args)).fetchone()
 
-        # New sales: contacts whose first ever invoice is within window
-        new_sales_today = c.execute("""
+        # New sales: contacts whose first ever invoice is within window AND
+        # whose student row's revenue_period matches.
+        new_sales_today = c.execute(f"""
             SELECT COUNT(DISTINCT first_inv.contact_id) AS n,
                    COALESCE(SUM(first_inv.total),0) AS amt
             FROM (
@@ -149,8 +169,9 @@ def today_panel(period: str | None = None) -> dict:
                 FROM invoices GROUP BY contact_id
             ) first_inv
             WHERE first_inv.first_date = ?
-        """, (today_iso,)).fetchone()
-        new_sales_week = c.execute("""
+              {('AND EXISTS (SELECT 1 FROM students s WHERE s.contact_id = first_inv.contact_id AND s.revenue_period = ?)') if period else ''}
+        """, (today_iso, *period_args)).fetchone()
+        new_sales_week = c.execute(f"""
             SELECT COUNT(DISTINCT first_inv.contact_id) AS n,
                    COALESCE(SUM(first_inv.total),0) AS amt
             FROM (
@@ -158,30 +179,34 @@ def today_panel(period: str | None = None) -> dict:
                 FROM invoices GROUP BY contact_id
             ) first_inv
             WHERE first_inv.first_date >= ?
-        """, (week_ago,)).fetchone()
+              {('AND EXISTS (SELECT 1 FROM students s WHERE s.contact_id = first_inv.contact_id AND s.revenue_period = ?)') if period else ''}
+        """, (week_ago, *period_args)).fetchone()
 
-        failures_week = c.execute("""
+        failures_week = c.execute(f"""
             SELECT COUNT(DISTINCT contact_id) AS n FROM invoices
             WHERE status_code IN (0, 5) AND last_recharge_date >= ?
-        """, (week_ago,)).fetchone()
+              {period_filter}
+        """, (week_ago, *period_args)).fetchone()
 
         certs_today = c.execute("""
             SELECT COUNT(*) AS n FROM students
             WHERE cert_issued=1 AND substr(cert_issued_at,1,10) = ?
-        """, (today_iso,)).fetchone()
+              AND (? IS NULL OR revenue_period = ?)
+        """, (today_iso, period, period)).fetchone()
 
-        # 5 most recent new sales for the live feed
-        recent = c.execute("""
+        # 5 most recent new sales for the live feed (period-scoped via JOIN)
+        recent = c.execute(f"""
             SELECT first_inv.contact_id, first_inv.first_date, first_inv.total,
                    s.first_name, s.last_name, s.stream, s.location, s.start_date
             FROM (
                 SELECT contact_id, MIN(invoice_date) AS first_date, MAX(total) AS total
                 FROM invoices GROUP BY contact_id
             ) first_inv
-            LEFT JOIN students s ON s.contact_id = first_inv.contact_id
+            {'INNER JOIN' if period else 'LEFT JOIN'} students s ON s.contact_id = first_inv.contact_id
+            {'AND s.revenue_period = ?' if period else ''}
             WHERE first_inv.first_date >= ?
             ORDER BY first_inv.first_date DESC LIMIT 8
-        """, (week_ago,)).fetchall()
+        """, ((period, week_ago) if period else (week_ago,))).fetchall()
 
     return {
         "today": {
