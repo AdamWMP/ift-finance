@@ -37,8 +37,8 @@ def main(period: str = "S26") -> int:
     _step("push live-money-in → L18", sales_board.push_live_money_in, period, "L18")
 
     from . import queries
-    # Follow-on streams (S&C / PPN / AN / FBA) need invoice data to derive
-    # revenue_period. Backfill runs after the invoice ingest step above.
+    # backfill_followon_periods is a no-op while FOLLOWON_STREAMS is empty —
+    # safe to leave it called for forward-compat with future re-enable.
     _step("backfill follow-on revenue_period from invoices",
           queries.backfill_followon_periods)
     _step("record daily snapshot", queries.record_snapshot, period)

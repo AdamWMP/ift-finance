@@ -928,11 +928,10 @@ def fees_by_stream_named(period: str) -> list[dict]:
         out.append({**r, "label": nice})
     return out
 
-# Which streams are eligible for cert ordering. User asked for the four
-# main accredited courses (PT, Mat Pilates, Reformer Pilates, S&C). PPN / AN
-# / FBA also have student rows but are typically not printed as certificates
-# in batches — they're issued as completions roll in.
-CERT_EXPORT_STREAMS = {"PT", "Pilates", "Reformer", "S&C"}
+# Which streams have per-student data and are therefore eligible for cert
+# ordering. Reformer / S&C / PPN / AN / FBA are tracked only as Sales Board
+# aggregates right now — restore them here once per-student ingest comes back.
+CERT_EXPORT_STREAMS = {"PT", "Pilates"}
 
 
 def _split_quals(qualification: str | None) -> list[str]:

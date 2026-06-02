@@ -189,17 +189,12 @@ YEAR_2026 = {
     "f2590": "616",  # Reformer
 }
 
-# Follow-on stream "course marker" fields — a contact with any of these set
-# has bought into that stream at some point. Period assignment happens later
-# from their first paid invoice (Adam's model: count revenue in the term it's
-# paid in, regardless of when the course actually runs).
-FOLLOWON_MARKER_OPTIONS = {
-    "f2318": "528",  # S&C Course → "Strength & Conditioning Course"
-    "f2323": "529",  # PPN Course → "Pre and Post Natal Online Course"
-    "f2329": "530",  # AN Course  → "Advanced Nutrition Course"
-    # FBA is a checkbox — discovered separately via f2614=1
-}
-FBA_ENROLLED_FIELD = "f2614"
+# NOTE: Follow-on stream discovery (S&C / PPN / AN / FBA) intentionally
+# disabled — those streams come from the Sales Board only to keep finances
+# matching the SB exactly and to avoid old-term contacts (whose course marker
+# is still set from a prior term) appearing in the current view.
+# If we re-enable later, the marker constants needed are:
+#   f2318=528 (S&C), f2323=529 (PPN), f2329=530 (AN), f2614=1 (FBA Enrolled)
 
 def _decode_value(field_id: str, raw, fields_meta: dict):
     """Translate ONtraport raw values to human-readable strings."""
@@ -242,35 +237,20 @@ def _discover_by_condition(cond_obj: dict, label: str, ids: set[str]) -> None:
 
 
 def discover_s26_contact_ids() -> list[str]:
-    """Find every contact who is enrolled in a tracked course/stream.
+    """Find every contact whose PT, Pilates, OR Reformer course year = 2026.
 
-    Discovery returns *candidates*. Period assignment (which term their
-    revenue counts towards) happens later from invoice dates — see
-    backfill_followon_periods. Old contacts whose first paid invoice is in a
-    prior term automatically end up in that prior term, not the current one.
+    Reformer-only contacts are fetched + decoded but never written as student
+    rows (Reformer revenue lives on the Sales Board, not in raw_students).
+    Follow-on streams (S&C / PPN / AN / FBA / NutriCert) are intentionally
+    NOT discovered here — those revenues come from the Sales Board aggregate
+    cells only, which avoids both double-counting and old-term contact leak.
     """
     ids: set[str] = set()
-
-    # Year-tagged streams (PT / Pilates / Reformer) — discovered by year = 2026
     for field_id, value in YEAR_2026.items():
         _discover_by_condition(
             {"field": {"field": field_id}, "op": "=", "value": {"value": value}},
             f"{field_id}={value}", ids,
         )
-
-    # Follow-on streams (S&C / PPN / AN) — course marker dropdown set
-    for field_id, option_id in FOLLOWON_MARKER_OPTIONS.items():
-        _discover_by_condition(
-            {"field": {"field": field_id}, "op": "=", "value": {"value": option_id}},
-            f"{field_id}={option_id} (follow-on marker)", ids,
-        )
-
-    # FBA — checkbox field, "checked" = "1"
-    _discover_by_condition(
-        {"field": {"field": FBA_ENROLLED_FIELD}, "op": "=", "value": {"value": "1"}},
-        f"{FBA_ENROLLED_FIELD}=1 (FBA Enrolled)", ids,
-    )
-
     return sorted(ids)
 
 def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
