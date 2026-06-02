@@ -7,10 +7,15 @@
   <h2>Activity feed
     <a class="csv-btn" style="margin-left:8px"
        href="/admin/activity.csv?q={{ data.filters.q|urlencode }}&days={{ data.filters.days }}&status={{ data.filters.status|urlencode }}&stream={{ data.filters.stream|urlencode }}">⬇ CSV</a>
+    <label class="muted small" style="margin-left:12px;font-weight:normal">
+      <input type="checkbox" id="autorefresh-toggle" checked> Auto-refresh every <span id="autorefresh-countdown">60</span>s
+    </label>
   </h2>
   <p class="muted small">
     Every invoice event (payment closed, declined, in collections, refunded …)
-    sourced directly from ONtraport. Search by name, email, contact ID, or invoice ID.
+    sourced directly from ONtraport — pulled every {{ (sync_interval or 600) // 60 }} min by the scheduler.
+    Search by name, email, contact ID, or invoice ID.
+    {% if last_sync_at %}<span class="muted small">Last sync: {{ last_sync_at }}.</span>{% endif %}
   </p>
 
   <form method="get" action="/admin/activity" class="tx-form" style="margin-bottom:14px">
@@ -132,5 +137,35 @@
   {% endif %}
 
 </section>
+
+<script>
+// Auto-refresh: reload the page every 60s so new invoices appear without
+// manual reload. Pauses while the user is mid-edit in the search box.
+(function(){
+  const REFRESH_SECS = 60;
+  const toggle = document.getElementById('autorefresh-toggle');
+  const countdown = document.getElementById('autorefresh-countdown');
+  const search = document.querySelector('input[name="q"]');
+  let remaining = REFRESH_SECS;
+  let paused = false;
+  // Pause while typing into the search box so we don't blow away their input
+  if (search) {
+    search.addEventListener('focus', () => { paused = true; });
+    search.addEventListener('blur',  () => { paused = false; remaining = REFRESH_SECS; });
+  }
+  setInterval(() => {
+    if (!toggle.checked || paused) {
+      countdown.textContent = '—';
+      return;
+    }
+    remaining -= 1;
+    if (remaining <= 0) {
+      location.reload();
+    } else {
+      countdown.textContent = remaining;
+    }
+  }, 1000);
+})();
+</script>
 
 {% endblock %}

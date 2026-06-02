@@ -1079,7 +1079,7 @@ def backfill_followon_periods() -> dict:
 
 # --- "Board snapshot for Simon" panel ---------------------------------------
 # Reproduces the layout of Adam's previous A25 Dashboard tab so the board can
-# see total + COMBO + PILATES + ONLINE/BELFAST broken down at a glance.
+# see total + COMBO + PILATES + ONLINE/DERRY broken down at a glance.
 
 def _prev_period(period: str) -> str:
     """S26 → A25, A25 → S25, S25 → A24, etc."""
@@ -1124,7 +1124,7 @@ def simon_panel(period: str) -> dict:
       • TOTAL  — everything in the current revenue_period (incl. sales board)
       • COMBO  — anything PT-related (every contact with a PT row)
       • PILATES — anything Pilates-related (Pilates + Reformer rows)
-      • ONLINE/BELFAST — Online location, Derry (renamed Belfast), or an
+      • ONLINE/DERRY — Online location, Derry (renamed Belfast), or an
                          Online pathway
     """
     # TOTAL: reuse macro() so sales-board categories are included
@@ -1145,7 +1145,7 @@ def simon_panel(period: str) -> dict:
     pilates = _segment_fees(period,
         "AND stream IN ('Pilates','Reformer')", ())
 
-    # ONLINE/BELFAST: Online location, Derry (renamed from Belfast), or anything
+    # ONLINE/DERRY: Online location, Derry (renamed from Belfast), or anything
     # whose pathway has "Online" in it (covers Online combo pathways).
     online = _segment_fees(period,
         "AND (location IN ('Online','Derry') OR pathway LIKE '%Online%')", ())
@@ -1193,7 +1193,7 @@ def simon_panel(period: str) -> dict:
             "TOTAL":          total,
             "COMBO":          combo,
             "PILATES":        pilates,
-            "ONLINE/BELFAST": online,
+            "ONLINE/DERRY": online,
         },
         "money_in": money_in_rows,
         "history": monthly,

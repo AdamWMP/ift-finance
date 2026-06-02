@@ -340,10 +340,15 @@ def admin_activity(request: Request,
                    stream: str = "", limit: int = 500):
     """Searchable invoice activity feed — payments closed, declined, in
     collections, etc. Use this when someone asks 'where did this €X come from'."""
+    import os
     data = queries.recent_transactions(q=q, days=days, status=status,
                                        stream=stream, limit=limit)
+    last_sync_at, _ = get_meta("last_sync_at")
+    sync_interval = int(os.environ.get("IFT_SYNC_INTERVAL_SEC", "600"))
     return templates.TemplateResponse("activity.html", {
         "request": request, "data": data,
+        "last_sync_at": last_sync_at,
+        "sync_interval": sync_interval,
     })
 
 @app.get("/admin/activity.csv")
