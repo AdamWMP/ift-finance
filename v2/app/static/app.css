@@ -82,7 +82,7 @@ main{padding:28px;max-width:1200px;margin:0 auto}
 .tick{position:absolute;top:0;bottom:0;transform:translateX(-50%);pointer-events:none}
 .targetbar:hover{cursor:help}
 .targetcounter{position:absolute;top:-26px;transform:translateX(-50%);pointer-events:none}
-.targetcounter-pill{display:inline-block;padding:2px 8px;border-radius:99px;background:var(--ink);color:#000;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.targetcounter-pill{display:inline-block;padding:2px 8px;border-radius:99px;background:var(--ink);color:var(--bg);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;box-shadow:0 2px 8px rgba(0,0,0,.4)}
 .targetcounter-pill::after{content:"";position:absolute;bottom:-3px;left:50%;transform:translateX(-50%) rotate(45deg);width:6px;height:6px;background:var(--ink)}
 .tickline{width:2px;height:100%;background:var(--ink);opacity:.35}
 .tickline.hit{background:#000;opacity:.6}
