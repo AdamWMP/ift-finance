@@ -122,14 +122,22 @@ def today_panel(period: str | None = None) -> dict:
     today_iso = date.today().isoformat()
     week_ago  = (date.today() - timedelta(days=7)).isoformat()
     with get_db() as c:
-        # Payments closed today + last 7d
+        # Payments closed today + last 7d.
+        # Fall back to invoice_date when closed_date isn't populated — a chunk
+        # of ONtraport's Closed invoices ship with closed_date NULL, and the
+        # strict-equality filter on closed_date was silently dropping them
+        # (~€16k/wk gap vs the Activity feed cross-check).
         paid_today = c.execute("""
             SELECT COUNT(*) AS n, COALESCE(SUM(total_paid),0) AS amt
-            FROM invoices WHERE status_code=1 AND closed_date = ?
+            FROM invoices
+            WHERE status_code=1
+              AND COALESCE(closed_date, invoice_date, '') = ?
         """, (today_iso,)).fetchone()
         paid_week = c.execute("""
             SELECT COUNT(*) AS n, COALESCE(SUM(total_paid),0) AS amt
-            FROM invoices WHERE status_code=1 AND closed_date >= ?
+            FROM invoices
+            WHERE status_code=1
+              AND COALESCE(closed_date, invoice_date, '') >= ?
         """, (week_ago,)).fetchone()
 
         # New sales: contacts whose first ever invoice is within window
@@ -552,7 +560,7 @@ def _recent_daily_rate(days: int = 60) -> float:
     with get_db() as c:
         r = c.execute(
             "SELECT COALESCE(SUM(total_paid),0) AS s FROM invoices "
-            "WHERE status_code=1 AND closed_date >= ?",
+            "WHERE status_code=1 AND COALESCE(closed_date, invoice_date, '') >= ?",
             (cutoff,)).fetchone()
     return (r["s"] or 0) / days
 
