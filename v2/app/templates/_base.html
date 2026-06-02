@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}IFT Finance{% endblock %}</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
 <script>
   (function() {
     const t = localStorage.getItem('ift-theme');
@@ -54,7 +54,7 @@
 <footer class="foot">
   <span id="syncStatus">Source: ONtraport + IFT Sales Board · <span id="syncTime">checking…</span></span>
 </footer>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_version }}"></script>
 <script>
 (function() {
   const fmt = ts => {

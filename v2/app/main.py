@@ -32,6 +32,17 @@ def _start_scheduler():
 app.mount("/static", StaticFiles(directory=HERE/"static"), name="static")
 templates = Jinja2Templates(directory=HERE/"templates")
 
+# Cache-bust for static assets — versioned via the latest mtime of app.css / app.js
+# so an edit to either bumps the URL and every browser refetches automatically.
+def _asset_version() -> str:
+    paths = [HERE/"static"/"app.css", HERE/"static"/"app.js"]
+    try:
+        return str(int(max(p.stat().st_mtime for p in paths if p.exists())))
+    except (FileNotFoundError, ValueError):
+        return "0"
+ASSET_VERSION = _asset_version()
+templates.env.globals["asset_version"] = ASSET_VERSION
+
 PUBLIC_PATHS = {"/login", "/static", "/health"}
 
 @app.middleware("http")
