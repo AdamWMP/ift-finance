@@ -552,28 +552,30 @@ def sales_summary(period: str) -> dict:
     reference but doesn't drive the bar.
     """
     with get_db() as c:
-        # Active-only counts feed `potential_sales` / `expected` (drop-offs can't
-        # contribute more — they've left).
+        # Active-only contact counts for `actual_paying` / `potential` head-count
+        # (drop-offs aren't paying contacts any more).
         active = c.execute("""
             SELECT COUNT(DISTINCT contact_id) AS actual_paying,
-                   COUNT(DISTINCT contact_id) FILTER (WHERE qualification != '') AS potential,
-                   COALESCE(SUM(price),0)     AS rs_expected
+                   COUNT(DISTINCT contact_id) FILTER (WHERE qualification != '') AS potential
             FROM students
             WHERE revenue_period = ? AND is_dropoff = 0
         """, (period,)).fetchone()
-        # `collected` includes drop-off `spent` — drop-offs DID pay some money
-        # before leaving, and that money is real revenue. Matches Total Fees
-        # Paid on the hero card so the bar and the headline reconcile.
-        all_paid = c.execute("""
-            SELECT COALESCE(SUM(spent),0) AS spent_all
+        # collected + expected both include drop-offs — drop-offs paid real
+        # money (counts as collected) and their headline price was part of
+        # the original sale (counts as expected). Matches fees_summary.total
+        # exactly so the bar reconciles with both Total Fees Due and Total
+        # Fees Paid in the hero card.
+        all_sums = c.execute("""
+            SELECT COALESCE(SUM(spent),0) AS spent_all,
+                   COALESCE(SUM(price),0) AS price_all
             FROM students WHERE revenue_period = ?
         """, (period,)).fetchone()
     sb_extra = sum(_sales_board_by_category(period).values())
-    collected = (all_paid["spent_all"] or 0) + sb_extra   # = fees_summary.total.paid
-    expected  = (active["rs_expected"] or 0) + sb_extra   # active-only
+    collected = (all_sums["spent_all"] or 0) + sb_extra   # = fees_summary.total.paid
+    expected  = (all_sums["price_all"] or 0) + sb_extra   # = fees_summary.total.due
     # Backwards-compat alias for downstream that still uses `r`-style keys
     r = {"actual_paying": active["actual_paying"], "potential": active["potential"],
-         "rs_collected":  collected - sb_extra, "rs_expected": active["rs_expected"]}
+         "rs_collected":  collected - sb_extra, "rs_expected": all_sums["price_all"]}
     sales = round(collected / SALE_VALUE, 1)
     expected_sales = round(expected / SALE_VALUE, 1)
 
@@ -1130,14 +1132,17 @@ def _prev_period(period: str) -> str:
 
 def _segment_fees(period: str, where_sql: str, params: tuple) -> dict:
     """Per-segment Due/Paid/Owed + sales-equivalent. `where_sql` is appended to
-    a WHERE that already filters revenue_period and excludes drop-offs."""
+    a WHERE that already filters revenue_period. Drop-offs ARE included —
+    they paid real money and that money counts in Total Fees Paid, so the
+    segment view must include it too or the figures won't reconcile with
+    the hero card."""
     with get_db() as c:
         r = c.execute(f"""
             SELECT COUNT(DISTINCT contact_id) AS contacts,
                    COALESCE(SUM(price),0) AS due,
                    COALESCE(SUM(spent),0) AS paid
             FROM students
-            WHERE revenue_period=? AND is_dropoff=0 {where_sql}
+            WHERE revenue_period=? {where_sql}
         """, (period, *params)).fetchone()
     due, paid = r["due"] or 0, r["paid"] or 0
     potential_sales = round(due / SALE_VALUE, 1)
@@ -1163,14 +1168,20 @@ def simon_panel(period: str) -> dict:
       • ONLINE/DERRY — Online location, Derry (renamed Belfast), or an
                          Online pathway
     """
-    # TOTAL: reuse macro() so sales-board categories are included
-    m = macro(period)
+    # TOTAL: pull straight from fees_summary so the snapshot panel matches
+    # the hero card "Total Fees Paid" exactly (was using macro() which
+    # excludes drop-offs — drop-off paid amounts were ~€3k missing from
+    # the snapshot panel and people noticed the mismatch).
+    fees = fees_summary(period)
+    t_due  = fees["total"]["due"]
+    t_paid = fees["total"]["paid"]
+    t_owed = max(fees["total"]["owed"], 0)
     total = {
-        "contacts": m["students"],
-        "due": m["expected"], "paid": m["collected"], "owed": max(m["outstanding"], 0),
-        "potential_sales": round(m["expected"]  / SALE_VALUE, 1),
-        "actual_sales":    round(m["collected"] / SALE_VALUE, 1),
-        "remaining_sales": max(round((m["expected"] - m["collected"]) / SALE_VALUE, 1), 0),
+        "contacts": macro(period)["students"],
+        "due": t_due, "paid": t_paid, "owed": t_owed,
+        "potential_sales": round(t_due  / SALE_VALUE, 1),
+        "actual_sales":    round(t_paid / SALE_VALUE, 1),
+        "remaining_sales": max(round((t_due - t_paid) / SALE_VALUE, 1), 0),
     }
 
     # COMBO = anything PT-related (every contact with a PT stream row).
@@ -1208,16 +1219,23 @@ def simon_panel(period: str) -> dict:
         monthly.append(h)
     monthly = list(reversed(monthly[:4]))  # ascending, max 4
 
-    # % change vs previous term — uses existing macro() so it's tolerant of empty A25
+    # % change vs previous term — use the SAME source (fees_summary.total) so
+    # the delta is consistent with the figures we display (both include
+    # drop-offs).
     prev = _prev_period(period)
-    prev_m = macro(prev) if prev else {"collected": 0, "expected": 0, "students": 0}
+    if prev:
+        prev_fees = fees_summary(prev)
+        prev_paid = prev_fees["total"]["paid"]
+        prev_due  = prev_fees["total"]["due"]
+    else:
+        prev_paid = prev_due = 0
     def _delta(curr, prior):
         if not prior: return None
         return (curr - prior) / prior * 100.0
 
     deltas = {
-        "total_paid":      _delta(total["paid"],      prev_m["collected"]),
-        "total_due":       _delta(total["due"],       prev_m["expected"]),
+        "total_paid": _delta(total["paid"], prev_paid),
+        "total_due":  _delta(total["due"],  prev_due),
         # segment-level deltas would require segmenting the previous period the
         # same way — backfill task. Show — for now.
     }
