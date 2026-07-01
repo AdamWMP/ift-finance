@@ -349,6 +349,44 @@ def admin_audit_json(period: str = "S26"):
     return queries.revenue_audit(period)
 
 
+@app.get("/api/invoice-tags")
+def api_get_invoice_tags(invoice_id: int):
+    """Fetch existing payment-method tags for a given invoice."""
+    return {"invoice_id": invoice_id, "tags": queries.invoice_payment_tags(invoice_id)}
+
+
+@app.post("/api/invoice-tags")
+async def api_set_invoice_tags(request: Request):
+    """Replace ALL payment-method tags on an invoice with the posted set.
+
+    JSON body:
+      {
+        "invoice_id": 12345,
+        "contact_id": "42133",
+        "entries": [
+          {"method": "Cash",          "amount": 200, "note": "collected on site"},
+          {"method": "Bank Transfer", "amount": 183}
+        ]
+      }
+
+    An empty entries list clears all tags on the invoice.
+    """
+    body = await request.json()
+    try:
+        invoice_id = int(body.get("invoice_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invoice_id required"}
+    contact_id = str(body.get("contact_id") or "").strip()
+    if not contact_id:
+        return {"ok": False, "error": "contact_id required"}
+    entries = body.get("entries") or []
+    if not isinstance(entries, list):
+        return {"ok": False, "error": "entries must be a list"}
+    n = queries.set_invoice_payment_tags(invoice_id, contact_id, entries)
+    return {"ok": True, "invoice_id": invoice_id, "tags_written": n,
+            "tags": queries.invoice_payment_tags(invoice_id)}
+
+
 @app.get("/admin/activity", response_class=HTMLResponse)
 def admin_activity(request: Request,
                    q: str = "", days: int = 30, status: str = "",
@@ -364,6 +402,7 @@ def admin_activity(request: Request,
         "request": request, "data": data,
         "last_sync_at": last_sync_at,
         "sync_interval": sync_interval,
+        "payment_methods": queries.PAYMENT_TAG_METHODS,
     })
 
 @app.get("/admin/activity.csv")

@@ -1255,6 +1255,105 @@ def simon_panel(period: str) -> dict:
     }
 
 
+# --- Invoice-level payment-method tags --------------------------------------
+# When a payment lands in ONtraport it's tagged as one method (Stripe by
+# default). Adam sometimes needs to record that it was actually Cash / Bank
+# Transfer / DSP, or that it was split across multiple methods. We store each
+# tag as a `transactions` row (source='manual', direction='in') linked to the
+# original invoice via invoice_id. The existing by_payment_method() logic
+# already reallocates a contact's spent from its default method to any manual
+# entries — invoice tags plug into that automatically.
+
+# The methods offered in the UI. Extend here to add more.
+PAYMENT_TAG_METHODS = [
+    "Stripe", "Cash", "Card", "Bank Transfer", "Revolut", "DSP", "SkillNet", "Other",
+]
+
+
+def invoice_payment_tags(invoice_id: int) -> list[dict]:
+    """Every payment tag currently applied to a given ONtraport invoice."""
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT id, date, subcategory AS method, amount, contact_id, note, created_at
+            FROM transactions
+            WHERE source='manual' AND direction='in' AND invoice_id=?
+            ORDER BY id DESC
+        """, (invoice_id,)).fetchall()
+    return [dict(r) for r in rs]
+
+
+def invoice_payment_tags_bulk(invoice_ids: list[int]) -> dict[int, list[dict]]:
+    """Batch lookup — {invoice_id → [tag rows]}. Empty list for invoices with
+    no tags. Used to hydrate the Activity feed in one query."""
+    out: dict[int, list[dict]] = {i: [] for i in invoice_ids}
+    if not invoice_ids:
+        return out
+    qmarks = ",".join("?" for _ in invoice_ids)
+    with get_db() as c:
+        rs = c.execute(f"""
+            SELECT id, date, subcategory AS method, amount, invoice_id, contact_id, note
+            FROM transactions
+            WHERE source='manual' AND direction='in' AND invoice_id IN ({qmarks})
+            ORDER BY id DESC
+        """, tuple(invoice_ids)).fetchall()
+    for r in rs:
+        out.setdefault(r["invoice_id"], []).append(dict(r))
+    return out
+
+
+def set_invoice_payment_tags(invoice_id: int, contact_id: str,
+                              entries: list[dict], *,
+                              period: str | None = None,
+                              tag_date: str | None = None) -> int:
+    """Replace ALL tags on an invoice with the given entries.
+
+    `entries` is a list of {method, amount, note}. Empty list clears tags.
+    Returns the number of rows inserted.
+    """
+    from datetime import date as _date
+    d = tag_date or _date.today().isoformat()
+    with get_db() as c:
+        # Wipe previous tags for this invoice first
+        c.execute("""DELETE FROM transactions
+                     WHERE source='manual' AND direction='in' AND invoice_id=?""",
+                  (invoice_id,))
+        # Fall back to inferring the period from the contact's student rows if
+        # the caller didn't supply one, so the row lands in the right term.
+        if period is None:
+            r = c.execute("""SELECT revenue_period FROM students
+                             WHERE contact_id=? AND revenue_period != ''
+                             ORDER BY revenue_period DESC LIMIT 1""",
+                          (contact_id,)).fetchone()
+            period = r["revenue_period"] if r else ""
+        n = 0
+        for e in entries:
+            method = (e.get("method") or "").strip()
+            try:
+                amount = float(e.get("amount") or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if not method or amount <= 0:
+                continue
+            note = (e.get("note") or "").strip() or f"Invoice #{invoice_id} tag"
+            c.execute("""
+                INSERT INTO transactions
+                    (date, period, direction, category, subcategory, amount,
+                     contact_id, source, status, note, invoice_id)
+                VALUES (?, ?, 'in', 'course_sale', ?, ?, ?, 'manual', 'paid', ?, ?)
+            """, (d, period, method, amount, contact_id, note, invoice_id))
+            n += 1
+    return n
+
+
+def delete_invoice_payment_tags(invoice_id: int) -> int:
+    """Clear all payment tags on an invoice. Returns rowcount."""
+    with get_db() as c:
+        cur = c.execute("""DELETE FROM transactions
+                           WHERE source='manual' AND direction='in' AND invoice_id=?""",
+                        (invoice_id,))
+        return cur.rowcount
+
+
 # --- Audit / double-count check ---------------------------------------------
 # Show every source of revenue for a period and how they combine into the
 # headline figures. Cross-checks: macro.collected should equal student-sum +
@@ -1395,6 +1494,8 @@ def recent_transactions(*, q: str = "", days: int = 30, status: str = "",
     args.append(limit)
     with get_db() as c:
         rows = c.execute(sql, args).fetchall()
+    # Batch-hydrate payment tags for every invoice in the result set
+    tag_map = invoice_payment_tags_bulk([r["invoice_id"] for r in rows])
     out = []
     for r in rows:
         d = dict(r)
@@ -1403,6 +1504,8 @@ def recent_transactions(*, q: str = "", days: int = 30, status: str = "",
         d["display_date"] = d["closed_date"] or d["invoice_date"] or ""
         d["ontraport_invoice_url"] = f"https://app.ontraport.com/#!/invoice/edit&id={d['invoice_id']}"
         d["ontraport_contact_url"] = f"https://app.ontraport.com/#!/contact/edit&id={d['contact_id']}"
+        d["payment_tags"] = tag_map.get(d["invoice_id"], [])
+        d["tag_total"] = sum(t["amount"] or 0 for t in d["payment_tags"])
         out.append(d)
     # Summary roll-up of what's in the result set
     summary = {

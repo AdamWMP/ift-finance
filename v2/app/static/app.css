@@ -277,6 +277,25 @@ html.light tr.row-warn td{background:rgba(239,68,68,.08)}
   .simon-bottom{grid-template-columns:1fr}
 }
 
+/* Invoice payment-method tags */
+.tag-slot{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.tag-chip{display:inline-flex;align-items:center;background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink);white-space:nowrap}
+.tag-edit-btn{padding:2px 8px;font-size:11px;color:var(--muted);background:transparent;border:1px dashed var(--line);border-radius:6px;cursor:pointer}
+.tag-edit-btn:hover{color:var(--ink);border-color:var(--accent)}
+
+.tag-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9000;padding:20px}
+.tag-modal-backdrop[hidden]{display:none!important}
+.tag-modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:640px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.tag-modal-head{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:8px}
+.tag-modal-title{font-size:16px;font-weight:700;color:var(--ink)}
+.tag-modal-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.tag-row{display:grid;grid-template-columns:140px 120px 1fr 32px;gap:8px;align-items:center;margin-bottom:6px}
+.tag-row select,.tag-row input{padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:13px;font-family:inherit}
+.tag-row select:focus,.tag-row input:focus{outline:none;border-color:var(--accent)}
+.tag-row-remove{padding:5px 8px;font-size:11px;color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.tag-row-remove:hover{color:var(--bad);border-color:var(--bad)}
+@media(max-width:600px){.tag-row{grid-template-columns:1fr 1fr;}}
+
 @media(max-width:720px){
   .hero{grid-template-columns:repeat(2,1fr)}
   main{padding:16px}

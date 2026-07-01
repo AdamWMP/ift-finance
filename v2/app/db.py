@@ -220,6 +220,13 @@ def init_db():
                          ("cert_issued_at", "TEXT")]:
             if col not in existing:
                 c.execute(f"ALTER TABLE students ADD COLUMN {col} {ddl}")
+        # invoice_id on transactions — used to trace an invoice-level payment
+        # method tag back to the underlying ONtraport invoice. Nullable so
+        # existing manual (non-invoice-linked) transactions keep working.
+        existing_tx = {r["name"] for r in c.execute("PRAGMA table_info(transactions)").fetchall()}
+        if "invoice_id" not in existing_tx:
+            c.execute("ALTER TABLE transactions ADD COLUMN invoice_id INTEGER")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_tx_invoice ON transactions(invoice_id)")
 
 def period_for(d: date | None) -> str:
     """Feb–Jul → S{yy}, Aug–Dec → A{yy}, Jan → A{yy-1}. None → ''."""

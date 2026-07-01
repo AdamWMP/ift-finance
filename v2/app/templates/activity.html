@@ -94,12 +94,16 @@
       <th class="num">Total</th>
       <th class="num">Paid</th>
       <th class="num">Balance</th>
+      <th>Payment tag</th>
       <th>Invoice</th>
       <th>Contact</th>
     </tr></thead>
     <tbody>
       {% for r in data.rows %}
-      <tr>
+      <tr data-invoice-id="{{ r.invoice_id }}"
+          data-contact-id="{{ r.contact_id }}"
+          data-total-paid="{{ r.total_paid or 0 }}"
+          data-name="{{ r.name }}">
         <td class="muted small">{{ r.display_date }}</td>
         <td>
           <div class="name">{{ r.name }}</div>
@@ -121,14 +125,179 @@
         <td class="num">€{{ "{:,.0f}".format(r.total or 0) }}</td>
         <td class="num" style="color:var(--good)">€{{ "{:,.0f}".format(r.total_paid or 0) }}</td>
         <td class="num" style="color:{{ 'var(--bad)' if (r.balance or 0) > 0 else 'inherit' }}">€{{ "{:,.0f}".format(r.balance or 0) }}</td>
+        <td>
+          <div class="tag-slot" data-invoice-id="{{ r.invoice_id }}">
+            {% if r.payment_tags %}
+              {% for t in r.payment_tags %}
+              <span class="tag-chip" title="{{ t.note or '' }}">{{ t.method }} · €{{ "{:,.0f}".format(t.amount) }}</span>
+              {% endfor %}
+              <button class="btn tag-edit-btn" type="button">Edit</button>
+            {% else %}
+              <button class="btn tag-edit-btn" type="button">＋ Tag</button>
+            {% endif %}
+          </div>
+        </td>
         <td><a class="btn" href="{{ r.ontraport_invoice_url }}" target="_blank" rel="noopener" title="Open invoice in ONtraport">#{{ r.invoice_id }} ↗</a></td>
         <td><a class="btn" href="{{ r.ontraport_contact_url }}" target="_blank" rel="noopener">↗</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="9" class="muted">No matching invoices in this window.</td></tr>
+      <tr><td colspan="10" class="muted">No matching invoices in this window.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+
+  {# --- Payment-tag modal --- #}
+  <div id="tag-modal" class="tag-modal-backdrop" hidden>
+    <div class="tag-modal">
+      <div class="tag-modal-head">
+        <div>
+          <div class="tag-modal-title">Tag payment method</div>
+          <div class="tag-modal-sub" id="tag-modal-sub"></div>
+        </div>
+        <button type="button" class="btn" id="tag-modal-close">✕</button>
+      </div>
+      <p class="muted small" style="margin:0 0 12px">
+        Record how this invoice was actually paid. Add one row for full payment, or
+        multiple rows for split payments. Rows re-allocate this invoice's revenue
+        from the ONtraport default (Stripe) into the correct method on the
+        "How money has come in" panel — no double-counting.
+      </p>
+      <div id="tag-entries"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+        <button type="button" class="btn" id="tag-add-row">＋ Add row (split)</button>
+        <div>
+          <span class="muted small" id="tag-total-hint" style="margin-right:12px"></span>
+          <button type="button" class="btn" id="tag-clear">Clear all</button>
+          <button type="button" class="csv-btn" id="tag-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <template id="tag-row-template">
+    <div class="tag-row">
+      <select class="tag-method">
+        {% for m in payment_methods %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+      </select>
+      <input class="tag-amount" type="number" step="0.01" min="0" placeholder="€ amount">
+      <input class="tag-note" type="text" placeholder="Note (optional)">
+      <button type="button" class="btn tag-row-remove">✕</button>
+    </div>
+  </template>
+
+  <script>
+  (function(){
+    const modal = document.getElementById('tag-modal');
+    const entriesEl = document.getElementById('tag-entries');
+    const subEl = document.getElementById('tag-modal-sub');
+    const totalHint = document.getElementById('tag-total-hint');
+    const tpl = document.getElementById('tag-row-template');
+    let currentRow = null;
+
+    function newRow(preset){
+      const node = tpl.content.firstElementChild.cloneNode(true);
+      if (preset) {
+        if (preset.method) node.querySelector('.tag-method').value = preset.method;
+        if (preset.amount != null) node.querySelector('.tag-amount').value = preset.amount;
+        if (preset.note) node.querySelector('.tag-note').value = preset.note;
+      }
+      node.querySelector('.tag-row-remove').addEventListener('click', () => {
+        node.remove(); refreshTotal();
+      });
+      node.querySelector('.tag-amount').addEventListener('input', refreshTotal);
+      entriesEl.appendChild(node);
+    }
+
+    function refreshTotal(){
+      const total = [...entriesEl.querySelectorAll('.tag-amount')]
+        .reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
+      const target = parseFloat(currentRow?.dataset.totalPaid || 0);
+      const diff = target - total;
+      let hint = `Tagged: €${total.toFixed(2)}`;
+      if (target > 0) {
+        if (Math.abs(diff) < 0.01) hint += ` · reconciled`;
+        else if (diff > 0) hint += ` · €${diff.toFixed(2)} untagged`;
+        else hint += ` · €${(-diff).toFixed(2)} over`;
+      }
+      totalHint.textContent = hint;
+    }
+
+    function openTag(row){
+      currentRow = row;
+      const name = row.dataset.name || '';
+      const inv  = row.dataset.invoiceId;
+      const paid = parseFloat(row.dataset.totalPaid || 0);
+      subEl.textContent = `${name} · Invoice #${inv} · €${paid.toFixed(2)} paid`;
+      entriesEl.innerHTML = '';
+      // Load existing tags
+      fetch(`/api/invoice-tags?invoice_id=${inv}`)
+        .then(r => r.json())
+        .then(j => {
+          const existing = (j.tags || []);
+          if (existing.length) existing.forEach(t => newRow({method: t.method, amount: t.amount, note: t.note}));
+          else newRow({amount: paid > 0 ? paid : ''});
+          refreshTotal();
+        })
+        .catch(() => { newRow({amount: paid > 0 ? paid : ''}); refreshTotal(); });
+      modal.hidden = false;
+    }
+
+    function close(){ modal.hidden = true; currentRow = null; }
+    document.getElementById('tag-modal-close').addEventListener('click', close);
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) close(); });
+
+    document.getElementById('tag-add-row').addEventListener('click', () => { newRow(); refreshTotal(); });
+    document.getElementById('tag-clear').addEventListener('click', () => { entriesEl.innerHTML = ''; refreshTotal(); });
+
+    document.getElementById('tag-save').addEventListener('click', async () => {
+      if (!currentRow) return;
+      const entries = [...entriesEl.querySelectorAll('.tag-row')].map(r => ({
+        method: r.querySelector('.tag-method').value,
+        amount: parseFloat(r.querySelector('.tag-amount').value || 0),
+        note:   r.querySelector('.tag-note').value || '',
+      })).filter(e => e.amount > 0);
+      const payload = {
+        invoice_id: parseInt(currentRow.dataset.invoiceId, 10),
+        contact_id: currentRow.dataset.contactId,
+        entries,
+      };
+      const resp = await fetch('/api/invoice-tags', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const j = await resp.json();
+      if (!j.ok) { alert('Save failed: ' + (j.error || 'unknown')); return; }
+      // Re-render the slot inline
+      const slot = currentRow.querySelector('.tag-slot');
+      if (slot) {
+        slot.innerHTML = '';
+        (j.tags || []).forEach(t => {
+          const chip = document.createElement('span');
+          chip.className = 'tag-chip';
+          chip.title = t.note || '';
+          chip.textContent = `${t.method} · €${(t.amount || 0).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+          slot.appendChild(chip);
+        });
+        const btn = document.createElement('button');
+        btn.className = 'btn tag-edit-btn';
+        btn.type = 'button';
+        btn.textContent = (j.tags || []).length ? 'Edit' : '＋ Tag';
+        slot.appendChild(btn);
+      }
+      close();
+    });
+
+    // Delegate: open modal when any Tag/Edit button is clicked
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tag-edit-btn');
+      if (!btn) return;
+      const row = btn.closest('tr[data-invoice-id]');
+      if (row) openTag(row);
+    });
+  })();
+  </script>
 
   {% if data.rows|length >= data.filters.limit %}
   <p class="muted small" style="margin-top:8px">
