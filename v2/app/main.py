@@ -349,6 +349,73 @@ def admin_audit_json(period: str = "S26"):
     return queries.revenue_audit(period)
 
 
+@app.get("/admin/marketing", response_class=HTMLResponse)
+def admin_marketing(request: Request, months: int = 12, weeks: int = 12):
+    """Marketing tab — monthly + weekly ad-spend rollup by topic and account."""
+    from . import marketing as mkt
+    return templates.TemplateResponse("marketing.html", {
+        "request": request,
+        "summary":       queries.marketing_summary(months_back=months),
+        "weekly":        queries.marketing_weekly(weeks_back=weeks),
+        "by_account":    queries.marketing_by_account(months_back=months),
+        "unclassified":  queries.marketing_unclassified(),
+        "accounts":      mkt.list_accounts(),
+        "months":        months,
+        "weeks":         weeks,
+    })
+
+
+@app.post("/admin/marketing/import.csv")
+async def admin_marketing_import(request: Request,
+                                  platform: str = Form(...),
+                                  ad_account_id: str = Form(...),
+                                  ad_account_label: str = Form(...),
+                                  csv_text: str = Form("")):
+    """Manual CSV import (Ads Manager or Google Ads export). Falls back to
+    file-upload if csv_text is empty — reads the first uploaded file body."""
+    from . import marketing as mkt
+    text = csv_text
+    if not text:
+        form = await request.form()
+        for _, v in form.items():
+            if hasattr(v, "read"):
+                text = (await v.read()).decode("utf-8-sig", errors="replace")
+                break
+    if not text:
+        return RedirectResponse("/admin/marketing?error=empty", status_code=303)
+    # Ensure the account exists in ad_accounts so it appears in filters
+    mkt.upsert_account(platform, ad_account_id, ad_account_label)
+    result = mkt.import_spend_csv(text, platform=platform,
+                                  ad_account_id=ad_account_id,
+                                  ad_account_label=ad_account_label)
+    return RedirectResponse(
+        f"/admin/marketing?imported={result['upserted']}&parsed={result['parsed']}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/marketing/sync-meta")
+def admin_marketing_sync_meta(days: int = Form(7)):
+    """Trigger a Meta Ads sync for every enabled ad_accounts row."""
+    from . import marketing as mkt
+    try:
+        result = mkt.sync_meta_ads(days_back=int(days))
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/admin/marketing/account")
+def admin_marketing_account(platform: str = Form(...),
+                             account_id: str = Form(...),
+                             label: str = Form(...),
+                             enabled: str = Form("on")):
+    """Add or update an ad account row."""
+    from . import marketing as mkt
+    mkt.upsert_account(platform, account_id, label, enabled=(enabled == "on"))
+    return RedirectResponse("/admin/marketing", status_code=303)
+
+
 @app.get("/api/invoice-tags")
 def api_get_invoice_tags(invoice_id: int):
     """Fetch existing payment-method tags for a given invoice."""

@@ -1255,6 +1255,179 @@ def simon_panel(period: str) -> dict:
     }
 
 
+# --- Marketing: ad-spend rollups -------------------------------------------
+# Feeds the Marketing tab. Data lives in ad_spend (see app/marketing.py).
+# All money is stored per-day per-campaign; these queries roll it up by
+# month or week and by topic (classifier bucket).
+
+def marketing_summary(months_back: int = 12) -> dict:
+    """Monthly matrix of ad spend + leads + CPL by topic.
+
+    Returns:
+      {
+        "months":  ["2025-07", "2025-08", ..., "2026-06"],
+        "topics":  ["Pilates", "Personal Training", "Derry Pilates", ...],
+        "matrix":  { (topic, month): {spend, leads, cpl, clicks, impressions} },
+        "totals":  per-month totals across all topics,
+        "grand":   {spend, leads, cpl} across everything,
+      }
+    """
+    from calendar import monthrange
+    end   = date.today().replace(day=1)
+    months: list[str] = []
+    d = end
+    for _ in range(months_back):
+        months.append(d.strftime("%Y-%m"))
+        # step back one month
+        if d.month == 1: d = d.replace(year=d.year - 1, month=12)
+        else:            d = d.replace(month=d.month - 1)
+    months = list(reversed(months))
+    since = f"{months[0]}-01"
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT substr(date,1,7)                AS ym,
+                   COALESCE(topic,'Other')         AS topic,
+                   COALESCE(SUM(spend),0)          AS spend,
+                   COALESCE(SUM(leads),0)          AS leads,
+                   COALESCE(SUM(clicks),0)         AS clicks,
+                   COALESCE(SUM(impressions),0)    AS impressions
+            FROM ad_spend
+            WHERE date >= ?
+            GROUP BY ym, topic
+            ORDER BY ym, topic
+        """, (since,)).fetchall()
+    topics: set[str] = set()
+    matrix: dict[tuple[str, str], dict] = {}
+    for r in rs:
+        topics.add(r["topic"])
+        matrix[(r["topic"], r["ym"])] = {
+            "spend":   r["spend"] or 0,
+            "leads":   r["leads"] or 0,
+            "clicks":  r["clicks"] or 0,
+            "impressions": r["impressions"] or 0,
+            "cpl":     (r["spend"] / r["leads"]) if r["leads"] else None,
+        }
+    # Sort topics by total spend (desc), Other last
+    def _topic_key(t: str) -> tuple[int, float]:
+        total = sum((matrix.get((t, m), {}).get("spend") or 0) for m in months)
+        return (1 if t == "Other" else 0, -total)
+    topic_list = sorted(topics, key=_topic_key)
+
+    per_month = {m: {"spend": 0.0, "leads": 0, "clicks": 0, "impressions": 0}
+                 for m in months}
+    for (t, m), v in matrix.items():
+        if m in per_month:
+            per_month[m]["spend"] += v["spend"]
+            per_month[m]["leads"] += v["leads"]
+            per_month[m]["clicks"] += v["clicks"]
+            per_month[m]["impressions"] += v["impressions"]
+    grand_spend = sum(v["spend"] for v in per_month.values())
+    grand_leads = sum(v["leads"] for v in per_month.values())
+    return {
+        "months": months,
+        "topics": topic_list,
+        "matrix": matrix,
+        "totals": per_month,
+        "grand": {
+            "spend": grand_spend,
+            "leads": grand_leads,
+            "cpl":   (grand_spend / grand_leads) if grand_leads else None,
+        },
+    }
+
+
+def marketing_weekly(weeks_back: int = 12) -> dict:
+    """Weekly rollup by topic — same shape as marketing_summary but grained
+    by ISO week (Monday-anchored)."""
+    from datetime import timedelta as _td
+    today = date.today()
+    monday = today - _td(days=today.weekday())
+    weeks: list[str] = []
+    for i in range(weeks_back):
+        m = monday - _td(days=7 * i)
+        weeks.append(m.isoformat())
+    weeks = list(reversed(weeks))
+    since = weeks[0]
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT date, COALESCE(topic,'Other') AS topic,
+                   COALESCE(SUM(spend),0)  AS spend,
+                   COALESCE(SUM(leads),0)  AS leads
+            FROM ad_spend
+            WHERE date >= ?
+            GROUP BY date, topic
+        """, (since,)).fetchall()
+    # Bucket into weeks
+    def _week_start(iso: str) -> str:
+        try:
+            d = date.fromisoformat(iso)
+        except (TypeError, ValueError):
+            return ""
+        return (d - _td(days=d.weekday())).isoformat()
+    week_matrix: dict[tuple[str, str], dict] = {}
+    topics: set[str] = set()
+    for r in rs:
+        w = _week_start(r["date"])
+        if not w: continue
+        topics.add(r["topic"])
+        key = (r["topic"], w)
+        cell = week_matrix.setdefault(key, {"spend": 0, "leads": 0})
+        cell["spend"] += r["spend"] or 0
+        cell["leads"] += r["leads"] or 0
+    for k, v in week_matrix.items():
+        v["cpl"] = (v["spend"] / v["leads"]) if v["leads"] else None
+    def _topic_key(t: str) -> tuple[int, float]:
+        total = sum((week_matrix.get((t, w), {}).get("spend") or 0) for w in weeks)
+        return (1 if t == "Other" else 0, -total)
+    topic_list = sorted(topics, key=_topic_key)
+    per_week = {w: {"spend": 0.0, "leads": 0} for w in weeks}
+    for (t, w), v in week_matrix.items():
+        if w in per_week:
+            per_week[w]["spend"] += v["spend"]
+            per_week[w]["leads"] += v["leads"]
+    return {"weeks": weeks, "topics": topic_list, "matrix": week_matrix, "totals": per_week}
+
+
+def marketing_by_account(months_back: int = 12) -> list[dict]:
+    """Per-account spend + leads over the window — for the account panel."""
+    from calendar import monthrange
+    end = date.today()
+    since = (end.replace(day=1) - timedelta(days=1)).replace(day=1) - timedelta(days=1)
+    since = (end.replace(day=1) - timedelta(days=months_back * 31)).replace(day=1).isoformat()
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT platform, COALESCE(ad_account_label, ad_account_id) AS label,
+                   ad_account_id,
+                   COALESCE(SUM(spend),0) AS spend,
+                   COALESCE(SUM(leads),0) AS leads,
+                   COUNT(DISTINCT date)   AS days,
+                   MIN(date)              AS first_date,
+                   MAX(date)              AS last_date
+            FROM ad_spend
+            WHERE date >= ?
+            GROUP BY platform, label
+            ORDER BY spend DESC
+        """, (since,)).fetchall()
+    return [dict(r) for r in rs]
+
+
+def marketing_unclassified(months_back: int = 3, limit: int = 20) -> list[dict]:
+    """Recent campaigns that fell through the classifier to 'Other' — surfaced
+    so Adam can spot pattern gaps and update TOPIC_RULES."""
+    since = (date.today().replace(day=1) - timedelta(days=months_back * 31)).isoformat()
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT campaign_name, platform,
+                   COALESCE(SUM(spend),0) AS spend,
+                   MAX(date) AS last_seen
+            FROM ad_spend
+            WHERE COALESCE(topic,'Other') = 'Other' AND date >= ?
+            GROUP BY campaign_name, platform
+            ORDER BY spend DESC LIMIT ?
+        """, (since, limit)).fetchall()
+    return [dict(r) for r in rs]
+
+
 # --- Invoice-level payment-method tags --------------------------------------
 # When a payment lands in ONtraport it's tagged as one method (Stripe by
 # default). Adam sometimes needs to record that it was actually Cash / Bank

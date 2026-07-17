@@ -1,0 +1,282 @@
+{% extends "_base.html" %}
+{% block title %}Marketing · IFT Finance{% endblock %}
+
+{% block main %}
+
+<section class="block">
+  <h2>Marketing — ad spend</h2>
+  <p class="muted small">
+    Monthly and weekly ad spend across every connected ad account.
+    Campaigns are auto-classified into topic buckets from the campaign name
+    ({{ summary.topics|length }} topics detected).
+    Data sources: Meta Marketing API + Google Ads (CSV or API) — same schema
+    for both, so switching a platform on/off doesn't affect the display.
+  </p>
+
+  <div class="hero" style="grid-template-columns:repeat(4,1fr);margin:14px 0">
+    <div class="card">
+      <div class="label">Spend ({{ months }}m)</div>
+      <div class="num">€{{ "{:,.0f}".format(summary.grand.spend) }}</div>
+    </div>
+    <div class="card accent">
+      <div class="label">Leads ({{ months }}m)</div>
+      <div class="num">{{ summary.grand.leads }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Cost per lead</div>
+      <div class="num">{% if summary.grand.cpl %}€{{ "{:,.2f}".format(summary.grand.cpl) }}{% else %}—{% endif %}</div>
+    </div>
+    <div class="card">
+      <div class="label">Ad accounts</div>
+      <div class="num">{{ by_account|length }}</div>
+    </div>
+  </div>
+
+  {% if request.query_params.get('imported') %}
+  <p class="muted small" style="color:var(--good)">
+    ✓ Imported {{ request.query_params.get('imported') }} rows
+    ({{ request.query_params.get('parsed') }} parsed).
+  </p>
+  {% endif %}
+</section>
+
+{# ---- Monthly matrix: topics × months --- #}
+<section class="block">
+  <h2>Monthly spend by topic</h2>
+  {% if summary.topics %}
+  <div style="overflow-x:auto">
+    <table class="bars" style="min-width:800px">
+      <thead>
+        <tr>
+          <th style="text-align:left">Topic</th>
+          {% for m in summary.months %}
+          <th class="num" style="min-width:82px" title="{{ m }}">{{ m[5:7] }}/{{ m[2:4] }}</th>
+          {% endfor %}
+          <th class="num" style="min-width:90px;border-left:1px solid var(--line)">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in summary.topics %}
+        {% set row_total = 0 %}
+        {% for m in summary.months %}{% set cell = summary.matrix.get((t, m)) %}{% if cell %}{% set row_total = row_total + cell.spend %}{% endif %}{% endfor %}
+        <tr>
+          <td class="name"><b>{{ t }}</b></td>
+          {% for m in summary.months %}
+          {% set cell = summary.matrix.get((t, m)) %}
+          <td class="num" title="{% if cell %}Spend: €{{ '{:,.2f}'.format(cell.spend) }} · Leads: {{ cell.leads }} · CPL: {% if cell.cpl %}€{{ '{:,.2f}'.format(cell.cpl) }}{% else %}—{% endif %}{% else %}—{% endif %}">
+            {% if cell and cell.spend > 0 %}
+              €{{ "{:,.0f}".format(cell.spend) }}
+              <div class="muted small" style="font-size:10px">
+                {{ cell.leads }}L {% if cell.cpl %}· €{{ "{:.0f}".format(cell.cpl) }}/L{% endif %}
+              </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          {% endfor %}
+          <td class="num" style="border-left:1px solid var(--line);font-weight:700">
+            €{{ "{:,.0f}".format(row_total) }}
+          </td>
+        </tr>
+        {% endfor %}
+        <tr style="border-top:2px solid var(--line);font-weight:700">
+          <td class="name">Total</td>
+          {% for m in summary.months %}
+          {% set t = summary.totals.get(m, {}) %}
+          <td class="num">
+            {% if t.spend %}€{{ "{:,.0f}".format(t.spend) }}
+            <div class="muted small" style="font-size:10px">{{ t.leads }}L</div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          {% endfor %}
+          <td class="num" style="border-left:1px solid var(--line)">
+            €{{ "{:,.0f}".format(summary.grand.spend) }}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">No spend data yet. Add an ad account below and import a CSV, or wire the Meta sync.</p>
+  {% endif %}
+</section>
+
+{# ---- Weekly table --- #}
+<section class="block">
+  <h2>Weekly spend (last {{ weeks }}w)</h2>
+  {% if weekly.topics %}
+  <div style="overflow-x:auto">
+    <table class="bars" style="min-width:800px">
+      <thead>
+        <tr>
+          <th style="text-align:left">Week starting</th>
+          {% for t in weekly.topics %}
+          <th class="num" style="min-width:100px">{{ t }}</th>
+          {% endfor %}
+          <th class="num" style="border-left:1px solid var(--line)">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in weekly.weeks|reverse %}
+        {% set wtotal = weekly.totals.get(w, {}) %}
+        {% if wtotal.spend %}
+        <tr>
+          <td class="muted small">{{ w }}</td>
+          {% for t in weekly.topics %}
+          {% set cell = weekly.matrix.get((t, w)) %}
+          <td class="num">
+            {% if cell and cell.spend > 0 %}
+              €{{ "{:,.0f}".format(cell.spend) }}
+              {% if cell.leads %}<div class="muted small" style="font-size:10px">{{ cell.leads }}L</div>{% endif %}
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          {% endfor %}
+          <td class="num" style="border-left:1px solid var(--line);font-weight:700">
+            €{{ "{:,.0f}".format(wtotal.spend) }}
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">No weekly data yet.</p>
+  {% endif %}
+</section>
+
+{# ---- Ad accounts + sync --- #}
+<section class="block">
+  <h2>Ad accounts</h2>
+  <table class="bars">
+    <thead>
+      <tr><th>Platform</th><th>Label</th><th>Account ID</th><th class="num">Spend ({{ months }}m)</th><th class="num">Leads</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for acct in accounts %}
+      {% set match = namespace(spend=0, leads=0) %}
+      {% for a in by_account %}{% if a.ad_account_id == acct.account_id and a.platform == acct.platform %}{% set match.spend = a.spend %}{% set match.leads = a.leads %}{% endif %}{% endfor %}
+      <tr>
+        <td><b>{{ acct.platform|capitalize }}</b></td>
+        <td>{{ acct.label }}</td>
+        <td class="muted small" style="font-family:monospace">{{ acct.account_id }}</td>
+        <td class="num">€{{ "{:,.0f}".format(match.spend or 0) }}</td>
+        <td class="num">{{ match.leads or 0 }}</td>
+        <td>{% if acct.enabled %}<span style="color:var(--good)">Enabled</span>{% else %}<span class="muted">Disabled</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted small">No ad accounts registered. Add one below.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <details class="tx-form" style="margin-top:12px">
+    <summary class="csv-btn" style="cursor:pointer;display:inline-block">＋ Add / update ad account</summary>
+    <form method="post" action="/admin/marketing/account" style="margin-top:10px">
+      <div class="tx-grid">
+        <label>Platform
+          <select name="platform">
+            <option value="meta">Meta</option>
+            <option value="google">Google Ads</option>
+          </select>
+        </label>
+        <label>Label (short display name)
+          <input name="label" placeholder="IFT or Studio" required>
+        </label>
+        <label>Account ID
+          <input name="account_id" placeholder="act_1234567890 or 123-456-7890" required>
+        </label>
+        <label style="align-self:end">
+          <input type="checkbox" name="enabled" checked> Enabled
+        </label>
+        <label style="align-self:end">&nbsp;
+          <button type="submit">Save account</button>
+        </label>
+      </div>
+    </form>
+  </details>
+
+  <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+    <form method="post" action="/admin/marketing/sync-meta" style="margin:0">
+      <input type="hidden" name="days" value="30">
+      <button type="submit" class="csv-btn" title="Requires META_ADS_ACCESS_TOKEN env var">
+        ↻ Sync Meta (last 30d)
+      </button>
+    </form>
+  </div>
+</section>
+
+{# ---- CSV import (works for both platforms) --- #}
+<section class="block">
+  <h2>Import CSV (Meta Ads Manager · Google Ads export)</h2>
+  <p class="muted small">
+    Drop in a spend report and it'll parse automatically — flexible column
+    matching for both platforms. Recognised columns:
+    <b>date · campaign · spend</b> (required), plus <b>impressions · clicks · leads / results / conversions</b> (optional).
+  </p>
+  <form method="post" action="/admin/marketing/import.csv" enctype="multipart/form-data" class="tx-form">
+    <div class="tx-grid">
+      <label>Platform
+        <select name="platform" required>
+          <option value="meta">Meta</option>
+          <option value="google">Google Ads</option>
+        </select>
+      </label>
+      <label>Ad account label
+        <input name="ad_account_label" placeholder="IFT or Studio" required>
+      </label>
+      <label>Ad account ID
+        <input name="ad_account_id" placeholder="act_1234567890" required>
+      </label>
+    </div>
+    <label style="display:block;margin-top:12px">
+      Paste CSV text
+      <textarea name="csv_text" rows="6" placeholder="date,campaign,spend,leads&#10;2026-06-01,IFT - Pilates - Prospecting,124.50,3&#10;..."
+                style="width:100%;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:13px;font-family:ui-monospace,monospace"></textarea>
+    </label>
+    <div style="margin-top:10px;text-align:right">
+      <button type="submit" class="csv-btn">⬆ Import</button>
+    </div>
+  </form>
+</section>
+
+{# ---- Unclassified surface --- #}
+{% if unclassified %}
+<section class="block">
+  <h2>Unclassified campaigns</h2>
+  <p class="muted small">
+    These landed in the "Other" bucket because none of the classifier
+    keywords matched. If you'd like them to roll up under a topic, update
+    <code>TOPIC_RULES</code> in <code>app/marketing.py</code> — the classifier
+    is order-sensitive (most specific first).
+  </p>
+  <table class="bars">
+    <thead><tr><th>Campaign</th><th>Platform</th><th class="num">Spend</th><th>Last seen</th></tr></thead>
+    <tbody>
+      {% for u in unclassified %}
+      <tr>
+        <td>{{ u.campaign_name }}</td>
+        <td class="muted small">{{ u.platform|capitalize }}</td>
+        <td class="num">€{{ "{:,.0f}".format(u.spend) }}</td>
+        <td class="muted small">{{ u.last_seen }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="block">
+  <h2>Setup — what needs env vars</h2>
+  <ul class="muted small" style="line-height:1.7">
+    <li><b>Meta sync:</b> set <code>META_ADS_ACCESS_TOKEN</code> on Render to a long-lived
+        Business token with <code>ads_read</code> permission. Then add each ad account
+        above (Meta account IDs start with <code>act_</code>). The sync button pulls
+        the last 30 days per click; the scheduler can run it daily.</li>
+    <li><b>Google Ads:</b> API needs a developer token (1–3 days to approve) + OAuth
+        refresh token. Until then, use the CSV import — Google Ads has a native
+        report export that matches the schema above.</li>
+    <li><b>Classifier:</b> lives in <code>app/marketing.py</code> as <code>TOPIC_RULES</code>.
+        Add or reorder keyword patterns as your campaign naming evolves.</li>
+  </ul>
+</section>
+
+{% endblock %}

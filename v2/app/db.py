@@ -54,6 +54,35 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS ad_spend (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,                   -- ISO yyyy-mm-dd (day of spend)
+    platform TEXT NOT NULL,               -- meta | google
+    ad_account_id TEXT NOT NULL,
+    ad_account_label TEXT,                -- 'IFT' | 'Studio' — display shorthand
+    campaign_id TEXT,
+    campaign_name TEXT NOT NULL,
+    spend REAL NOT NULL DEFAULT 0,        -- € spent (currency-normalised at ingest)
+    impressions INTEGER,
+    clicks INTEGER,
+    leads INTEGER,                        -- lead-form results / conversions
+    topic TEXT,                           -- classified at ingest: Pilates | PT | Derry Pilates | Swords Studio | ...
+    fetched_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(date, platform, campaign_id)
+);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_date ON ad_spend(date);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_topic ON ad_spend(topic);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_platform ON ad_spend(platform);
+
+CREATE TABLE IF NOT EXISTS ad_accounts (
+    id INTEGER PRIMARY KEY,
+    platform TEXT NOT NULL,               -- meta | google
+    account_id TEXT NOT NULL,             -- e.g. act_1234567890 or 123-456-7890
+    label TEXT NOT NULL,                  -- 'IFT' | 'Studio' — display
+    enabled INTEGER DEFAULT 1,
+    UNIQUE(platform, account_id)
+);
+
 CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY,
     snapshot_date TEXT NOT NULL,
