@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv, re, sys
 from pathlib import Path
 
-from .db import DATA_DIR, DB_PATH, get_db, init_db, parse_date, period_for, pathway_for, normalize_location
+from .db import DATA_DIR, DB_PATH, get_db, init_db, parse_date, period_for, pathway_for, normalize_location, extract_origin_period
 
 # Resolve path at CALL TIME — refresh_s26_csv writes the CSV to DATA_DIR
 # every sync, but on a fresh prod disk that file doesn't exist when this
@@ -96,12 +96,26 @@ def ingest_csv():
                 rev_period = cls_period  # equal unless deferral (set below)
 
                 plan = f(r, plan_c)
-                # Deferral detection — placeholder until tag fetch lands.
-                # Once tags arrive, deferral truth comes from the tag list.
+                # Deferral detection.
+                # A deferred student stays counted in their ORIGINAL term
+                # (revenue_period = the term they signed up in), while their
+                # class_period moves to whichever term their new start_date
+                # lands in. That way:
+                #   • S26 sales figures keep counting them
+                #   • They show up in their new A26 class group cohort
+                #   • A26 term revenue does NOT double-count them
+                # The origin term is parsed out of whichever deferral marker
+                # text matched (e.g. "S26 Pilates Course Deferral" → S26).
                 is_def = 0
-                if any(p.search(qual) or p.search(plan) for p in DEFERRAL_PATTERNS):
-                    is_def = 1
-                    rev_period = ""  # money belongs to original (unknown here) term
+                origin_period = ""
+                for p in DEFERRAL_PATTERNS:
+                    m = p.search(qual) or p.search(plan)
+                    if m:
+                        is_def = 1
+                        origin_period = extract_origin_period(m.group(0))
+                        break
+                if is_def:
+                    rev_period = origin_period or ""  # blank only if origin unparseable
 
                 # The CSV's "Name" column already holds the full name; the
                 # separate "Last Name" column duplicates the surname. Split

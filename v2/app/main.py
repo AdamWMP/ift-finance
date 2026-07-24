@@ -416,6 +416,49 @@ def admin_marketing_account(platform: str = Form(...),
     return RedirectResponse("/admin/marketing", status_code=303)
 
 
+@app.post("/api/student/defer")
+async def api_student_defer(request: Request):
+    """Manually flag a student row as a deferral.
+
+    Body: {contact_id, stream, origin_period, target_period, clear?}
+      • origin_period → written to revenue_period (where the sale counts)
+      • target_period → written to class_period (which cohort they attend)
+      • clear=true → clears the deferral (restores revenue_period=class_period,
+        sets is_deferral=0). origin/target ignored when clear=true.
+
+    We only touch the columns strictly needed — nothing else. Idempotent.
+    """
+    body = await request.json()
+    contact_id = str(body.get("contact_id") or "").strip()
+    stream     = str(body.get("stream") or "").strip()
+    if not contact_id or not stream:
+        return {"ok": False, "error": "contact_id and stream required"}
+    from .db import get_db as _get_db
+    if body.get("clear"):
+        with _get_db() as c:
+            r = c.execute("""
+                UPDATE students
+                SET is_deferral = 0,
+                    revenue_period = class_period
+                WHERE contact_id=? AND stream=?
+            """, (contact_id, stream))
+        return {"ok": True, "cleared": True, "rows": r.rowcount}
+    origin = str(body.get("origin_period") or "").strip().upper()
+    target = str(body.get("target_period") or "").strip().upper()
+    if not origin or not target:
+        return {"ok": False, "error": "origin_period and target_period required"}
+    with _get_db() as c:
+        r = c.execute("""
+            UPDATE students
+            SET is_deferral    = 1,
+                revenue_period = ?,
+                class_period   = ?
+            WHERE contact_id=? AND stream=?
+        """, (origin, target, contact_id, stream))
+    return {"ok": True, "rows": r.rowcount,
+            "revenue_period": origin, "class_period": target}
+
+
 @app.get("/api/invoice-tags")
 def api_get_invoice_tags(invoice_id: int):
     """Fetch existing payment-method tags for a given invoice."""

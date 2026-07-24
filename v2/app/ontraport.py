@@ -360,6 +360,7 @@ def apply_tags() -> dict:
     print(f"fetching tags for {len(contact_ids)} contacts …", flush=True)
     contact_tags = fetch_contact_tag_map(contact_ids)
 
+    from .db import extract_origin_period
     counts = {"dropoff": 0, "deferral": 0, "grant": 0}
     with get_db() as c:
         for cid, tag_ids in contact_tags.items():
@@ -368,6 +369,16 @@ def apply_tags() -> dict:
             is_dropoff  = 1 if (DROP_OFF_TAG_ID in tag_ids) else 0
             is_deferral = 1 if any(p in joined for p in DEFERRAL_TAG_PATTERNS) else 0
             is_grant    = 1 if any(p in joined for p in GRANT_TAG_PATTERNS) else 0
+            # For deferrals, look at every tag on the contact and pick the
+            # first one containing a term marker (S25 / A25 / S26 …). That's
+            # the term the sale was originally made in — where revenue must
+            # stay counted, so the current term doesn't double-count them.
+            origin_period = ""
+            if is_deferral:
+                for name in names:
+                    if "deferral" in name:
+                        origin_period = extract_origin_period(name)
+                        if origin_period: break
             counts["dropoff"]  += is_dropoff
             counts["deferral"] += is_deferral
             counts["grant"]    += is_grant
@@ -378,6 +389,14 @@ def apply_tags() -> dict:
                     is_grant   = MAX(is_grant, ?)
                 WHERE contact_id = ?
             """, (is_dropoff, is_deferral, is_grant, cid))
+            # Anchor revenue_period to the origin term (where the sale was
+            # actually made). Only when we know it — leave existing value
+            # alone if the deferral tag has no term marker.
+            if is_deferral and origin_period:
+                c.execute("""
+                    UPDATE students SET revenue_period = ?
+                    WHERE contact_id = ? AND revenue_period != ?
+                """, (origin_period, cid, origin_period))
     print("tags applied:", counts, flush=True)
     return counts
 

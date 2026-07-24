@@ -749,14 +749,18 @@ def group_detail(group_id: str) -> dict | None:
             ORDER BY last_name, first_name
         """, (group_id,)).fetchall()
         if not students: return None
+        # Aggregate excludes deferrals from expected/collected — their money
+        # lives in another term (revenue_period) so summing it here would
+        # double-count. Deferrals still count in head-counts for status bars.
         agg = c.execute("""
             SELECT COUNT(*) AS n,
-                   COALESCE(SUM(price),0) AS expected,
-                   COALESCE(SUM(spent),0) AS collected,
-                   SUM(CASE WHEN price>0 AND spent>=price THEN 1 ELSE 0 END) AS paid_count,
-                   SUM(CASE WHEN price>0 AND spent>=price*0.5 AND spent<price THEN 1 ELSE 0 END) AS cert_ready_count,
-                   SUM(CASE WHEN spent>0 AND spent<price*0.5 THEN 1 ELSE 0 END) AS in_progress_count,
-                   SUM(CASE WHEN spent=0 THEN 1 ELSE 0 END) AS unpaid_count
+                   SUM(CASE WHEN is_deferral=1 THEN 1 ELSE 0 END) AS deferred_count,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN price ELSE 0 END),0) AS expected,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN spent ELSE 0 END),0) AS collected,
+                   SUM(CASE WHEN is_deferral=0 AND price>0 AND spent>=price THEN 1 ELSE 0 END) AS paid_count,
+                   SUM(CASE WHEN is_deferral=0 AND price>0 AND spent>=price*0.5 AND spent<price THEN 1 ELSE 0 END) AS cert_ready_count,
+                   SUM(CASE WHEN is_deferral=0 AND spent>0 AND spent<price*0.5 THEN 1 ELSE 0 END) AS in_progress_count,
+                   SUM(CASE WHEN is_deferral=0 AND spent=0 THEN 1 ELSE 0 END) AS unpaid_count
             FROM students WHERE group_id = ?
         """, (group_id,)).fetchone()
     expected = agg["expected"] or 0
@@ -767,7 +771,13 @@ def group_detail(group_id: str) -> dict | None:
         d["name"] = f"{d.get('first_name','') or ''} {d.get('last_name','') or ''}".strip() or f"Contact {d['contact_id']}"
         d["outstanding"] = (d["price"] or 0) - (d["spent"] or 0)
         d["ontraport_url"] = f"https://app.ontraport.com/#!/contact/edit&id={d['contact_id']}"
-        if d["price"] and d["spent"] >= d["price"]:
+        if d.get("is_deferral"):
+            # Deferrals carry a separate status so the UI can badge them.
+            # deferred_from = revenue_period (origin), deferred_to = class_period (target)
+            d["status"] = "deferred"
+            d["deferred_from"] = d.get("revenue_period") or "?"
+            d["deferred_to"]   = d.get("class_period")   or "?"
+        elif d["price"] and d["spent"] >= d["price"]:
             d["status"] = "paid"
         elif d["price"] and d["spent"] >= d["price"] * 0.5:
             d["status"] = "cert-ready"
@@ -798,6 +808,7 @@ def group_detail(group_id: str) -> dict | None:
             "in_progress": agg["in_progress_count"] or 0,
             "unpaid": agg["unpaid_count"] or 0,
             "cert_issued": cert_issued_count,
+            "deferred":   agg["deferred_count"] or 0,
         },
     }
 
@@ -1906,12 +1917,23 @@ def cert_export_rows(group_ids: list[str]) -> tuple[list[dict], int]:
 
 
 def class_groups(period: str) -> list[dict]:
+    """Cohorts scheduled to run in `period` (matched on class_period).
+
+    A student deferred INTO this term still shows up in the head-count
+    (they're physically in the room) but their fees are excluded from the
+    group's expected/collected totals — that money was counted in their
+    ORIGINAL term (revenue_period), and summing it into this term's group
+    aggregate would double-count against the finance report. Deferrals
+    are surfaced separately via `deferred_in` so the group page can render
+    a badge.
+    """
     with get_db() as c:
         rs = c.execute("""
             SELECT group_id, stream, location, start_date, timetable,
                    COUNT(*) AS students,
-                   COALESCE(SUM(price),0) AS expected,
-                   COALESCE(SUM(spent),0) AS collected
+                   SUM(CASE WHEN is_deferral=1 THEN 1 ELSE 0 END) AS deferred_in,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN price ELSE 0 END),0) AS expected,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN spent ELSE 0 END),0) AS collected
             FROM students
             WHERE class_period = ? AND is_dropoff = 0
             GROUP BY group_id ORDER BY start_date, stream, location
@@ -1920,6 +1942,7 @@ def class_groups(period: str) -> list[dict]:
     for r in rs:
         d = _row_with_pct(r)
         d["label"] = friendly_group_label(r["stream"], r["location"], r["start_date"], r["timetable"])
+        d["deferred_in"] = r["deferred_in"] or 0
         out.append(d)
     return out
 

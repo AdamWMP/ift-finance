@@ -125,7 +125,10 @@ main{padding:28px;max-width:1200px;margin:0 auto}
 .students th{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600;background:var(--panel2)}
 .students td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
 .students .name{font-weight:500}
-.students tr.deferral{opacity:.6}
+.students tr.deferral{opacity:.55;background:repeating-linear-gradient(-45deg,transparent 0 6px,rgba(148,163,184,.06) 6px 12px)}
+.status.deferred{background:rgba(148,163,184,.18);color:var(--muted);border:1px dashed var(--muted);border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
+.pill.deferred{background:rgba(148,163,184,.12);color:var(--muted);border-color:rgba(148,163,184,.3)}
+.defer-btn{font-size:11px}
 .status.cert{background:rgba(110,231,183,.15);color:var(--accent)}
 .badge.mini{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--line);color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-left:4px}
 

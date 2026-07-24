@@ -257,6 +257,21 @@ def init_db():
             c.execute("ALTER TABLE transactions ADD COLUMN invoice_id INTEGER")
             c.execute("CREATE INDEX IF NOT EXISTS ix_tx_invoice ON transactions(invoice_id)")
 
+def extract_origin_period(text: str | None) -> str:
+    """Pull a term marker (S25 / A25 / S26 / A26 …) out of any string.
+
+    Used to figure out where a deferred student's original SALE was made,
+    so their money stays counted in the correct term even when their class
+    start date moves. Deferral tags in ONtraport are typically named like
+    "S26 Pilates Course Deferral" or "A25 Combo Deferral" — we anchor on
+    that S## / A## token. Returns '' when nothing matches.
+    """
+    import re as _re
+    if not text: return ""
+    m = _re.search(r"\b([SA]\d{2})\b", text, _re.I)
+    return m.group(1).upper() if m else ""
+
+
 def period_for(d: date | None) -> str:
     """Feb–Jul → S{yy}, Aug–Dec → A{yy}, Jan → A{yy-1}. None → ''."""
     if not d: return ""

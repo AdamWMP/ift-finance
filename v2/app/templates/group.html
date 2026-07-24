@@ -30,6 +30,7 @@
     <span class="pill prog">In progress · {{ g.counts.in_progress }}</span>
     <span class="pill unpaid">Unpaid · {{ g.counts.unpaid }}</span>
     <span class="pill issued">Cert issued · {{ g.counts.cert_issued }}</span>
+    {% if g.counts.deferred %}<span class="pill deferred" title="Students in this class but whose sale sits in a different term">Deferrals in · {{ g.counts.deferred }}</span>{% endif %}
   </div>
 </section>
 
@@ -111,7 +112,11 @@
         <td class="num">€{{ "{:,.0f}".format(s.spent) }} <span class="muted">/ €{{ "{:,.0f}".format(s.price) }}</span></td>
         <td class="muted small" title="{{ s.payment_plan or '' }}">{{ s.plan_short or "—" }}</td>
         <td>
-          {% if s.status == "paid" %}<span class="status complete">Paid</span>
+          {% if s.status == "deferred" %}
+            <span class="status deferred" title="Sale counted in {{ s.deferred_from }} · attending in {{ s.deferred_to }}">
+              Deferred from {{ s.deferred_from }}
+            </span>
+          {% elif s.status == "paid" %}<span class="status complete">Paid</span>
           {% elif s.status == "cert-ready" %}<span class="status cert">Cert-ready</span>
           {% elif s.status == "in-progress" %}<span class="status ok">In progress</span>
           {% else %}<span class="status behind">Unpaid</span>{% endif %}
@@ -139,6 +144,16 @@
         <td>
           <a class="btn" href="/admin/transactions?contact={{ s.contact_id }}&name={{ (s.name or '')|urlencode }}&period={{ g.period }}" title="Log a cash / bank transfer / DSP payment for this student">💳</a>
           <a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a>
+          <button type="button" class="btn defer-btn"
+                  data-contact-id="{{ s.contact_id }}"
+                  data-stream="{{ s.stream }}"
+                  data-name="{{ s.name }}"
+                  data-current-rev="{{ s.revenue_period or g.period }}"
+                  data-current-cls="{{ s.class_period or g.period }}"
+                  data-is-deferral="{{ 1 if s.is_deferral else 0 }}"
+                  title="Mark this student as a deferral — money stays in the origin term, class moves to the target term">
+            {% if s.is_deferral %}⤺ Edit deferral{% else %}⤺ Defer{% endif %}
+          </button>
         </td>
       </tr>
       {% endfor %}
@@ -151,4 +166,116 @@
   <a class="csv-btn" href="/admin/attendance-export.csv?group_id={{ g.group_id|urlencode }}"
      title="Tutor sheet — students × session dates with theory/practical/notes columns">📋 Export attendance sheet (CSV)</a>
 </section>
+
+{# --- Defer modal --- #}
+<div id="defer-modal" class="tag-modal-backdrop" hidden>
+  <div class="tag-modal" style="max-width:520px">
+    <div class="tag-modal-head">
+      <div>
+        <div class="tag-modal-title">Mark student as a deferral</div>
+        <div class="tag-modal-sub" id="defer-modal-sub"></div>
+      </div>
+      <button type="button" class="btn" id="defer-modal-close">✕</button>
+    </div>
+    <p class="muted small" style="margin:0 0 12px">
+      <b>Origin term</b> is where the sale is counted (their money stays there).
+      <b>Target term</b> is where they'll physically attend the class. Their finance
+      figure does <b>not</b> re-count in the target term — no double-counting.
+    </p>
+    <div class="tx-grid" style="grid-template-columns:1fr 1fr;gap:10px">
+      <label>Origin term (sale counted here)
+        <input id="defer-origin" type="text" placeholder="e.g. S26" maxlength="4"
+               style="text-transform:uppercase">
+      </label>
+      <label>Target term (class attended here)
+        <input id="defer-target" type="text" placeholder="e.g. A26" maxlength="4"
+               style="text-transform:uppercase">
+      </label>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+      <button type="button" class="btn" id="defer-clear"
+              title="Un-mark as deferral — revenue_period will snap back to class_period">
+        Clear deferral
+      </button>
+      <div>
+        <button type="button" class="btn" id="defer-cancel">Cancel</button>
+        <button type="button" class="csv-btn" id="defer-save">Save deferral</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const modal   = document.getElementById('defer-modal');
+  const subEl   = document.getElementById('defer-modal-sub');
+  const oriEl   = document.getElementById('defer-origin');
+  const tgtEl   = document.getElementById('defer-target');
+  const clearBt = document.getElementById('defer-clear');
+  let currentBtn = null;
+
+  function open(btn){
+    currentBtn = btn;
+    const name = btn.dataset.name || '';
+    const cid  = btn.dataset.contactId;
+    const rev  = (btn.dataset.currentRev || '').toUpperCase();
+    const cls  = (btn.dataset.currentCls || '').toUpperCase();
+    const isDef = btn.dataset.isDeferral === '1';
+    subEl.textContent = `${name} · CID ${cid}${isDef ? ` · currently deferred ${rev} → ${cls}` : ''}`;
+    oriEl.value = isDef ? rev : rev;
+    tgtEl.value = isDef ? cls : cls;
+    clearBt.style.display = isDef ? '' : 'none';
+    modal.hidden = false;
+    oriEl.focus();
+  }
+  function close(){ modal.hidden = true; currentBtn = null; }
+
+  document.getElementById('defer-modal-close').addEventListener('click', close);
+  document.getElementById('defer-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) close(); });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.defer-btn');
+    if (btn) open(btn);
+  });
+
+  async function submit(payload){
+    const r = await fetch('/api/student/defer', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert('Failed: ' + (j.error || 'unknown')); return; }
+    location.reload();  // simplest — the row's period, badge, aggregates all shift
+  }
+
+  document.getElementById('defer-save').addEventListener('click', () => {
+    if (!currentBtn) return;
+    const origin = (oriEl.value || '').trim().toUpperCase();
+    const target = (tgtEl.value || '').trim().toUpperCase();
+    if (!/^[SA]\d{2}$/.test(origin) || !/^[SA]\d{2}$/.test(target)) {
+      alert('Term codes look like S26, A25, S27 etc.');
+      return;
+    }
+    submit({
+      contact_id: currentBtn.dataset.contactId,
+      stream:     currentBtn.dataset.stream,
+      origin_period: origin,
+      target_period: target,
+    });
+  });
+
+  clearBt.addEventListener('click', () => {
+    if (!currentBtn) return;
+    if (!confirm('Clear the deferral flag on this student? Their revenue_period will snap back to their class_period.')) return;
+    submit({
+      contact_id: currentBtn.dataset.contactId,
+      stream:     currentBtn.dataset.stream,
+      clear:      true,
+    });
+  });
+})();
+</script>
 {% endblock %}
