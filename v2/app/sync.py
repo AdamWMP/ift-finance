@@ -41,6 +41,10 @@ def main(period: str = "S26") -> int:
     # safe to leave it called for forward-compat with future re-enable.
     _step("backfill follow-on revenue_period from invoices",
           queries.backfill_followon_periods)
+    # Deferrals: derive origin term from earliest paid invoice (per Adam's
+    # naming convention — the tag names the DESTINATION term, not origin).
+    _step("backfill deferral revenue_period from invoices",
+          queries.backfill_deferral_periods)
     _step("record daily snapshot", queries.record_snapshot, period)
 
     from .db import set_meta

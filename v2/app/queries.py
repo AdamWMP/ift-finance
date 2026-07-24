@@ -1047,6 +1047,65 @@ def _split_quals(qualification: str | None) -> list[str]:
     return dedup
 
 
+# --- Deferral revenue-period backfill ---------------------------------------
+# Adam's model: the deferral tag on ONtraport names the DESTINATION term (the
+# cohort she's moving into — "A26 Pilates Course Deferral"). The code needs
+# to figure out the ORIGIN term (where her money was actually collected) so
+# revenue stays anchored there. Invoice history is the source of truth — her
+# first paid invoice tells us which term the sale was made in.
+#
+# Runs after ingest_invoices in the sync so the invoices table is populated.
+
+MIN_DEFERRAL_INVOICE = 50.0  # ignore trial/test charges below this
+
+def backfill_deferral_periods() -> dict:
+    """For every deferred student, override revenue_period from the earliest
+    paid invoice ≥ €{MIN_DEFERRAL_INVOICE}. If no invoice history exists we
+    leave revenue_period untouched (falls through to whatever apply_tags or
+    ingest set from tag-term extraction — the previous fallback logic).
+
+    Returns {updated, unchanged, no_invoice}.
+    """
+    from .db import get_db, period_for
+    from datetime import date as _date
+    stats = {"updated": 0, "unchanged": 0, "no_invoice": 0}
+    with get_db() as c:
+        rows = c.execute("""
+            SELECT contact_id, stream, class_period, revenue_period
+            FROM students
+            WHERE is_deferral = 1
+        """).fetchall()
+    for r in rows:
+        with get_db() as c:
+            inv = c.execute("""
+                SELECT MIN(COALESCE(closed_date, invoice_date, '')) AS d
+                FROM invoices
+                WHERE contact_id=? AND status_code=1
+                  AND COALESCE(total_paid,0) >= ?
+            """, (r["contact_id"], MIN_DEFERRAL_INVOICE)).fetchone()
+        if not inv or not inv["d"]:
+            stats["no_invoice"] += 1
+            continue
+        try:
+            d = _date.fromisoformat(inv["d"][:10])
+        except (ValueError, TypeError):
+            stats["no_invoice"] += 1
+            continue
+        origin = period_for(d)
+        if not origin:
+            stats["no_invoice"] += 1
+            continue
+        if origin != r["revenue_period"]:
+            with get_db() as c:
+                c.execute("""UPDATE students SET revenue_period = ?
+                             WHERE contact_id=? AND stream=?""",
+                          (origin, r["contact_id"], r["stream"]))
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+    return stats
+
+
 # --- Follow-on stream period backfill ---------------------------------------
 # Cohort streams (PT/Pilates/Reformer) derive `revenue_period` from start_date.
 # Follow-on streams (S&C/PPN/AN/FBA) are rolling — Adam's rule is "the term the
