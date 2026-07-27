@@ -1,0 +1,145 @@
+{% extends "_base.html" %}
+{% block title %}Deferrals + refunds · IFT Finance{% endblock %}
+
+{% block main %}
+<section class="block">
+  <h2>Deferrals + refunds</h2>
+  <p class="muted small">
+    Every currently-deferred student, plus every refunded invoice in the last 90 days.
+    This is where to look when a headline figure has dropped and you want to know
+    exactly which contacts caused it — the deferral list shows who's now anchored to
+    a prior term (they still exist, just count in a different S## / A##), and the
+    refund list shows any money that came out of ONtraport.
+  </p>
+
+  <div class="hero" style="grid-template-columns:repeat(3,1fr);margin:14px 0">
+    <div class="card">
+      <div class="label">Deferrals on file</div>
+      <div class="num">{{ d.deferrals|length }}</div>
+    </div>
+    <div class="card accent">
+      <div class="label">Anchored OUT of {{ d.moved_out_of_current.period }}</div>
+      <div class="num">{{ d.moved_out_of_current.count }}</div>
+      <div class="muted small">totalling €{{ "{:,.0f}".format(d.moved_out_of_current.spent) }} shifted to prior terms</div>
+    </div>
+    <div class="card">
+      <div class="label">Refunds (last 90d)</div>
+      <div class="num">{{ d.recent_refunds|length }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>Deferred students</h2>
+  <p class="muted small" style="margin-bottom:8px">
+    A row is <b>moved</b> when its revenue_period (where their money counts) differs from its class_period (which cohort they attend).
+    <b>Derived origin</b> is what the code would set from their first paid invoice date — should match revenue_period; if it doesn't, the anchor may be from a tag term instead.
+  </p>
+  <table class="students">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Stream / location</th>
+        <th>Class term</th>
+        <th>Revenue term</th>
+        <th>First paid</th>
+        <th>Derived origin</th>
+        <th class="num">Price</th>
+        <th class="num">Paid</th>
+        <th>Refunds</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in d.deferrals %}
+      <tr class="{% if s.moved %}deferral{% endif %}">
+        <td>
+          <div class="name">{{ s.name }}</div>
+          <div class="muted small">CID {{ s.contact_id }}</div>
+        </td>
+        <td class="muted small">{{ s.stream }} · {{ s.location or '—' }}</td>
+        <td><b>{{ s.class_period or '—' }}</b></td>
+        <td>
+          {% if s.moved %}
+            <span class="status deferred">{{ s.revenue_period or '—' }} (moved)</span>
+          {% else %}
+            <b>{{ s.revenue_period or '—' }}</b>
+          {% endif %}
+        </td>
+        <td class="muted small">{{ s.first_paid_date or '—' }}</td>
+        <td class="muted small">
+          {% if s.derived_origin_period and s.derived_origin_period != s.revenue_period %}
+            <span style="color:var(--warn)">{{ s.derived_origin_period }} ≠ stored</span>
+          {% else %}
+            {{ s.derived_origin_period or '—' }}
+          {% endif %}
+        </td>
+        <td class="num">€{{ "{:,.0f}".format(s.price) }}</td>
+        <td class="num">€{{ "{:,.0f}".format(s.spent) }}</td>
+        <td>
+          {% if s.refund_count %}
+            <span style="color:var(--bad)">{{ s.refund_count }} · €{{ "{:,.0f}".format(s.refund_amount) }}</span>
+          {% else %}
+            <span class="muted small">—</span>
+          {% endif %}
+        </td>
+        <td>
+          <a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener" title="Open contact in ONtraport">↗</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="muted small">No deferrals on file.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block">
+  <h2>Refunded invoices (last 90 days)</h2>
+  <p class="muted small" style="margin-bottom:8px">
+    Every invoice tagged as Refunded or Partially Refunded in ONtraport. The
+    contact's <code>spent</code> rollup drops automatically on the next sync
+    (10-min cadence). If a refund isn't reflected in your figures, first check
+    the invoice actually got a Refund status in ONtraport.
+  </p>
+  <table class="students">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Name</th>
+        <th>Stream</th>
+        <th>Anchored to</th>
+        <th>Status</th>
+        <th class="num">Invoice total</th>
+        <th class="num">Paid</th>
+        <th class="num">Balance</th>
+        <th>Invoice</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in d.recent_refunds %}
+      <tr>
+        <td class="muted small">{{ r.d }}</td>
+        <td>
+          <div class="name">{{ r.name }}</div>
+          <div class="muted small">CID {{ r.contact_id }}</div>
+        </td>
+        <td class="muted small">{{ r.stream or '—' }}</td>
+        <td class="muted small">{{ r.revenue_period or '—' }}</td>
+        <td><span style="color:var(--bad)">{{ r.status or 'Refund' }}</span></td>
+        <td class="num">€{{ "{:,.0f}".format(r.total or 0) }}</td>
+        <td class="num">€{{ "{:,.0f}".format(r.total_paid or 0) }}</td>
+        <td class="num">€{{ "{:,.0f}".format(r.balance or 0) }}</td>
+        <td>
+          <a class="btn" href="{{ r.ontraport_invoice_url }}" target="_blank" rel="noopener">#{{ r.invoice_id }} ↗</a>
+          <a class="btn" href="{{ r.ontraport_contact_url }}" target="_blank" rel="noopener">↗</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="muted small">No refunded invoices in the last 90 days.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% endblock %}

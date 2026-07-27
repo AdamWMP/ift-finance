@@ -336,6 +336,17 @@ def admin_import_a25(request: Request):
     return RedirectResponse(url=referer, status_code=303)
 
 
+@app.get("/admin/deferrals", response_class=HTMLResponse)
+def admin_deferrals(request: Request):
+    """Full transparency into every currently-deferred student — who's
+    anchored to which term, first paid invoice date, refunds on file.
+    Answers 'who moved out of S26 and where did they go?'."""
+    return templates.TemplateResponse("deferrals.html", {
+        "request": request,
+        "d": queries.deferrals_diagnostic(),
+    })
+
+
 @app.get("/admin/audit", response_class=HTMLResponse)
 def admin_audit(request: Request, period: str = "S26"):
     return templates.TemplateResponse("audit.html", {

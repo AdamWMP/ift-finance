@@ -1047,6 +1047,101 @@ def _split_quals(qualification: str | None) -> list[str]:
     return dedup
 
 
+# --- Deferral diagnostic view ----------------------------------------------
+# Full per-student visibility into every deferral and every recent refund:
+# who moved where, when the sale actually happened (first paid invoice),
+# and whether they have any refund activity that reduced their spent.
+# Answers "who dropped out of the S26 headline figure and why?".
+
+def deferrals_diagnostic() -> dict:
+    """Return every currently-deferred student with the full trail: original
+    term (revenue_period), current class term (class_period), first paid
+    invoice date + amount (the anchor), and any refund activity on file.
+
+    Also surfaces recent refunded invoices across ALL students (not just
+    deferrals) so a €X drop caused by a refund is one click away.
+    """
+    from datetime import date as _date
+    from .db import get_db as _get_db, period_for as _period_for
+    out = {"deferrals": [], "recent_refunds": [], "unmoved_deferrals": 0}
+    with _get_db() as c:
+        # Every is_deferral row + invoice-derived origin + refund summary
+        drs = c.execute("""
+            SELECT s.contact_id, s.first_name, s.last_name, s.email, s.stream,
+                   s.location, s.start_date,
+                   s.class_period, s.revenue_period,
+                   COALESCE(s.price, 0)  AS price,
+                   COALESCE(s.spent, 0)  AS spent,
+                   s.payment_status,
+                   (SELECT MIN(COALESCE(closed_date, invoice_date, ''))
+                      FROM invoices
+                     WHERE contact_id = s.contact_id
+                       AND status_code = 1
+                       AND COALESCE(total_paid, 0) >= 50) AS first_paid_date,
+                   (SELECT COUNT(*) FROM invoices
+                     WHERE contact_id = s.contact_id
+                       AND status_code IN (2, 3)) AS refund_count,
+                   (SELECT COALESCE(SUM(total_paid), 0) FROM invoices
+                     WHERE contact_id = s.contact_id
+                       AND status_code IN (2, 3)) AS refund_amount
+              FROM students s
+             WHERE s.is_deferral = 1
+             ORDER BY s.spent DESC
+        """).fetchall()
+    for r in drs:
+        d = dict(r)
+        d["name"] = (f"{r['first_name'] or ''} {r['last_name'] or ''}".strip()
+                     or f"Contact {r['contact_id']}")
+        # Derive the invoice-based origin so we can compare it to what's stored
+        derived_origin = ""
+        if d["first_paid_date"]:
+            try:
+                derived_origin = _period_for(_date.fromisoformat(d["first_paid_date"][:10]))
+            except (ValueError, TypeError):
+                derived_origin = ""
+        d["derived_origin_period"] = derived_origin
+        d["moved"] = bool(d["revenue_period"] and d["class_period"]
+                          and d["revenue_period"] != d["class_period"])
+        d["ontraport_url"] = f"https://app.ontraport.com/#!/contact/edit&id={r['contact_id']}"
+        out["deferrals"].append(d)
+        if not d["moved"]:
+            out["unmoved_deferrals"] += 1
+
+    # Rollup: total money currently anchored OUT of the current term because
+    # of deferrals — this is exactly the "€X vanished from S26" figure.
+    from datetime import date as _d
+    now_period = _period_for(_d.today())
+    out["moved_out_of_current"] = {
+        "period": now_period,
+        "count":  sum(1 for d in out["deferrals"] if d["revenue_period"] != now_period),
+        "spent":  sum(d["spent"] for d in out["deferrals"] if d["revenue_period"] != now_period),
+    }
+
+    # Recent refund activity — invoices ≤90 days old with a Refund status.
+    # These are the second common cause of "money disappeared from the tab".
+    with _get_db() as c:
+        cutoff = (_d.today() - timedelta(days=90)).isoformat()
+        rfs = c.execute("""
+            SELECT i.id AS invoice_id, i.contact_id, i.status, i.total,
+                   i.total_paid, i.balance,
+                   COALESCE(i.closed_date, i.invoice_date) AS d,
+                   s.first_name, s.last_name, s.stream, s.revenue_period
+              FROM invoices i
+         LEFT JOIN students s ON s.contact_id = i.contact_id
+             WHERE i.status_code IN (2, 3)
+               AND COALESCE(i.closed_date, i.invoice_date, '') >= ?
+             ORDER BY d DESC LIMIT 100
+        """, (cutoff,)).fetchall()
+    for r in rfs:
+        d = dict(r)
+        d["name"] = (f"{r['first_name'] or ''} {r['last_name'] or ''}".strip()
+                     or f"Contact {r['contact_id']}")
+        d["ontraport_invoice_url"] = f"https://app.ontraport.com/#!/invoice/edit&id={r['invoice_id']}"
+        d["ontraport_contact_url"] = f"https://app.ontraport.com/#!/contact/edit&id={r['contact_id']}"
+        out["recent_refunds"].append(d)
+    return out
+
+
 # --- Deferral revenue-period backfill ---------------------------------------
 # Adam's model: the deferral tag on ONtraport names the DESTINATION term (the
 # cohort she's moving into — "A26 Pilates Course Deferral"). The code needs
