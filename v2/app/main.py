@@ -357,6 +357,42 @@ def admin_deferrals(request: Request,
     })
 
 
+@app.get("/admin/change-log.json")
+def admin_change_log(since: str = "2026-07-23"):
+    """Every ONtraport contact modified on/after `since`, cross-referenced
+    with the dashboard's current view of them. Used to audit 'what changed
+    over the last few days and is any of my revenue now double-counted or
+    invisible?'.
+    """
+    from . import ontraport as op
+    with get_db() as c:
+        cids = [r["contact_id"] for r in c.execute(
+            "SELECT DISTINCT contact_id FROM students WHERE contact_id != ''"
+        ).fetchall()]
+    live = op.fetch_contact_diagnostics(cids)
+    changed = [r for r in live if r.get("dlm") and r["dlm"] >= since]
+    # Cross-reference each contact with their student rows
+    with get_db() as c:
+        rows = c.execute("""
+            SELECT contact_id, stream, revenue_period, class_period,
+                   COALESCE(spent, 0) AS spent, COALESCE(price, 0) AS price
+            FROM students
+        """).fetchall()
+    dash_by_cid = {}
+    for r in rows:
+        dash_by_cid.setdefault(r["contact_id"], []).append(dict(r))
+    for r in changed:
+        r["dashboard_rows"] = dash_by_cid.get(r["contact_id"], [])
+        # Simple flag: has Reformer rollup > 0 (candidate for the July 24 split)
+        r["has_reformer_split"] = (r.get("reformer_spent") or 0) > 0
+    changed.sort(key=lambda x: x.get("dlm") or "", reverse=True)
+    return {
+        "since":   since,
+        "count":   len(changed),
+        "changed": changed,
+    }
+
+
 @app.get("/admin/lookup-cids.json")
 def admin_lookup_cids(cids: str = ""):
     """Live ONtraport lookup for a specific list of contact IDs — pass
