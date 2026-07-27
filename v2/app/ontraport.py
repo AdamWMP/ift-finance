@@ -346,6 +346,55 @@ def fetch_contact_tag_map(contact_ids: list[str]) -> dict[str, list[int]]:
             out[cid] = []
     return out
 
+def fetch_contact_diagnostics(contact_ids: list[str]) -> list[dict]:
+    """For each contact, pull back the modification timestamp and every rollup
+    that could explain a 'money moved' story:
+      • dlm — date modified (unix)
+      • f2335 — Pilates Course Spent (rollup)
+      • f2599 — Reformer Pilates Course Spent (rollup)
+      • f2334 — PT Course Spent (rollup)
+      • f2305 — Pilates Course Start Date
+      • f2595 — Reformer Course Start Date
+      • f2293 — PT Course Start Date
+    Batches of 50 (ONtraport hard cap). Returns list of dicts sorted by dlm desc.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    if not contact_ids:
+        return []
+    fields = "id,firstname,lastname,dlm,f2335,f2599,f2334,f2305,f2595,f2293"
+    out = []
+    for i in range(0, len(contact_ids), 50):
+        chunk = contact_ids[i:i+50]
+        r = requests.get(
+            f"{OP_BASE}/objects",
+            params={"objectID": 0, "ids": ",".join(chunk), "listFields": fields},
+            headers=HEADERS, timeout=30,
+        )
+        r.raise_for_status()
+        for c in r.json().get("data", []) or []:
+            dlm_raw = c.get("dlm") or ""
+            dlm_iso = None
+            if str(dlm_raw).isdigit():
+                try:
+                    dlm_iso = _dt.fromtimestamp(int(dlm_raw), tz=_tz.utc).isoformat(timespec="seconds")
+                except (ValueError, OSError):
+                    pass
+            out.append({
+                "contact_id":   str(c.get("id") or ""),
+                "name":         f"{c.get('firstname') or ''} {c.get('lastname') or ''}".strip(),
+                "dlm":          dlm_iso,
+                "dlm_raw":      dlm_raw,
+                "pilates_spent": _to_float(c.get("f2335")),
+                "reformer_spent":_to_float(c.get("f2599")),
+                "pt_spent":      _to_float(c.get("f2334")),
+                "pilates_start_raw": c.get("f2305") or "",
+                "reformer_start_raw":c.get("f2595") or "",
+                "pt_start_raw":  c.get("f2293") or "",
+            })
+    out.sort(key=lambda x: (x["dlm"] or ""), reverse=True)
+    return out
+
+
 def apply_tags() -> dict:
     """Set is_dropoff / is_deferral / is_grant flags on students from
     their ONtraport tags."""

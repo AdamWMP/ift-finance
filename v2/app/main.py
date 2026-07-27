@@ -357,6 +357,38 @@ def admin_deferrals(request: Request,
     })
 
 
+@app.get("/admin/lookup-diagnostics.json")
+def admin_lookup_diagnostics(since: str = "2026-07-22", limit: int = 100):
+    """For every student currently in the moved_out_of_period(S26) list,
+    fetch live ONtraport metadata (dlm, Pilates/Reformer/PT spent rollups,
+    start dates). Flag anyone modified since `since`.
+
+    This is the ground-truth answer to 'who was actually edited on/around
+    July 24 and by how much did their Pilates rollup drop vs their Reformer
+    rollup rise?'.
+    """
+    from . import ontraport as op
+    moved = queries.moved_out_of_period("S26")["rows"]
+    cids = [r["contact_id"] for r in moved[:limit] if r["contact_id"]]
+    live = op.fetch_contact_diagnostics(cids)
+    # Merge dashboard-side info onto live ONtraport data
+    dash_by_cid = {r["contact_id"]: r for r in moved}
+    for row in live:
+        d = dash_by_cid.get(row["contact_id"], {})
+        row["dashboard_spent"] = d.get("spent")
+        row["dashboard_stream"] = d.get("stream")
+        row["dashboard_revenue_period"] = d.get("revenue_period")
+        row["dashboard_class_period"]   = d.get("class_period")
+        row["first_paid_date"] = d.get("first_paid_date")
+        row["is_recently_modified"] = bool(row["dlm"] and row["dlm"] >= since)
+    return {
+        "since_cutoff": since,
+        "checked_count": len(live),
+        "recently_modified": [r for r in live if r["is_recently_modified"]],
+        "all": live,
+    }
+
+
 @app.get("/admin/deferrals.json")
 def admin_deferrals_json(migration_period: str = "A26",
                           moved_out_period: str = "S26"):
