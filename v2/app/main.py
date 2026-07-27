@@ -357,6 +357,36 @@ def admin_deferrals(request: Request,
     })
 
 
+@app.get("/admin/lookup-cids.json")
+def admin_lookup_cids(cids: str = ""):
+    """Live ONtraport lookup for a specific list of contact IDs — pass
+    `cids` as a comma-separated list. Returns per-contact spent rollups
+    (Pilates / Reformer / PT), start dates, and last-modified timestamp,
+    plus grand totals. Use for reconciliation checks against Sales Board
+    numbers or spreadsheets."""
+    from . import ontraport as op
+    ids = [c.strip() for c in cids.split(",") if c.strip()]
+    if not ids:
+        return {"error": "pass ?cids=CID1,CID2,..."}
+    live = op.fetch_contact_diagnostics(ids)
+    totals = {
+        "pilates_spent_total":  sum((r.get("pilates_spent")  or 0) for r in live),
+        "reformer_spent_total": sum((r.get("reformer_spent") or 0) for r in live),
+        "pt_spent_total":       sum((r.get("pt_spent")       or 0) for r in live),
+        "combined_grand_total": sum((r.get("pilates_spent") or 0)
+                                    + (r.get("reformer_spent") or 0)
+                                    + (r.get("pt_spent") or 0)
+                                    for r in live),
+    }
+    return {
+        "requested":  len(ids),
+        "returned":   len(live),
+        "missing":    [c for c in ids if c not in {r["contact_id"] for r in live}],
+        "totals":     totals,
+        "contacts":   live,
+    }
+
+
 @app.get("/admin/lookup-diagnostics.json")
 def admin_lookup_diagnostics(since: str = "2026-07-22", limit: int = 100):
     """For every student currently in the moved_out_of_period(S26) list,
