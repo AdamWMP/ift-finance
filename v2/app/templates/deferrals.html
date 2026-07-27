@@ -95,6 +95,79 @@
 </section>
 
 <section class="block">
+  <h2>Term-migration audit — students in {{ migration_period }} whose sale was elsewhere</h2>
+  <p class="muted small" style="margin-bottom:8px">
+    These students are currently anchored to <b>{{ migration_period }}</b> (revenue_period), but
+    their first paid invoice landed in a different term. Most common cause:
+    someone updated their start_date in ONtraport (moving class_period AND
+    revenue_period), even though the sale really happened in the earlier
+    term. If you meant this to be a deferral, click <b>⤺ Defer</b> on the
+    student's row in their cohort page — that anchors revenue back to the
+    origin term without touching ONtraport.
+  </p>
+
+  <form method="get" style="margin-bottom:10px">
+    <label class="muted small">
+      Show students currently in
+      <select name="migration_period" onchange="this.form.submit()"
+              style="padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--ink)">
+        {% for p in ['S25','A25','S26','A26','S27'] %}
+        <option value="{{ p }}" {% if p == migration_period %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+      whose first paid invoice was in a different term
+    </label>
+  </form>
+
+  <div class="hero" style="grid-template-columns:repeat(2,1fr);margin-bottom:12px">
+    <div class="card accent">
+      <div class="label">Students misaligned</div>
+      <div class="num">{{ migration.count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total paid (potentially drawn from another term)</div>
+      <div class="num">€{{ "{:,.0f}".format(migration.total_paid) }}</div>
+    </div>
+  </div>
+
+  <table class="students">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Stream / location</th>
+        <th>Start date</th>
+        <th>Anchored to</th>
+        <th>Derived origin</th>
+        <th>Deferral?</th>
+        <th class="num">Paid</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in migration.rows %}
+      <tr>
+        <td>
+          <div class="name">{{ s.name }}</div>
+          <div class="muted small">CID {{ s.contact_id }}</div>
+        </td>
+        <td class="muted small">{{ s.stream }} · {{ s.location or '—' }}</td>
+        <td class="muted small">{{ s.start_date or '—' }}</td>
+        <td><b>{{ s.revenue_period or '—' }}</b></td>
+        <td>
+          <span style="color:var(--warn)">{{ s.derived_origin }} (first paid {{ s.first_paid_date }})</span>
+        </td>
+        <td class="muted small">{% if s.is_deferral %}<span style="color:var(--good)">Yes</span>{% else %}<span style="color:var(--bad)">No — likely needs Defer flag</span>{% endif %}</td>
+        <td class="num">€{{ "{:,.0f}".format(s.spent) }}</td>
+        <td><a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted small">Nothing misaligned — every student's invoice history matches their revenue term.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block">
   <h2>Refunded invoices (last 90 days)</h2>
   <p class="muted small" style="margin-bottom:8px">
     Every invoice tagged as Refunded or Partially Refunded in ONtraport. The

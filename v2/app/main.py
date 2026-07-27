@@ -337,14 +337,27 @@ def admin_import_a25(request: Request):
 
 
 @app.get("/admin/deferrals", response_class=HTMLResponse)
-def admin_deferrals(request: Request):
-    """Full transparency into every currently-deferred student — who's
-    anchored to which term, first paid invoice date, refunds on file.
-    Answers 'who moved out of S26 and where did they go?'."""
+def admin_deferrals(request: Request, migration_period: str = "A26"):
+    """Full transparency into every currently-deferred student, refund
+    activity, AND cross-term migration audit — for each candidate `period`,
+    lists students currently anchored there whose first paid invoice date
+    lands in a different term (typical 'moved from S26' story)."""
     return templates.TemplateResponse("deferrals.html", {
         "request": request,
         "d": queries.deferrals_diagnostic(),
+        "migration": queries.term_migration_audit(migration_period),
+        "migration_period": migration_period,
     })
+
+
+@app.get("/admin/deferrals.json")
+def admin_deferrals_json(migration_period: str = "A26"):
+    """JSON snapshot of the whole diagnostic — used to check numbers
+    from scripts / other tools without scraping the HTML page."""
+    return {
+        "deferrals": queries.deferrals_diagnostic(),
+        "migration": queries.term_migration_audit(migration_period),
+    }
 
 
 @app.get("/admin/audit", response_class=HTMLResponse)

@@ -1142,6 +1142,65 @@ def deferrals_diagnostic() -> dict:
     return out
 
 
+# --- Term-migration audit ---------------------------------------------------
+# "Who moved between terms and why?" — beyond just deferrals. Any student
+# whose invoice history points to a term that DIFFERS from where they're
+# currently anchored is a candidate for scrutiny. This surfaces cases where
+# a start_date was edited (moving class_period AND revenue_period) but the
+# student is really an S26 sale who's just attending an A26 cohort.
+
+def term_migration_audit(target_period: str) -> dict:
+    """Every student currently anchored to `target_period` (revenue_period)
+    whose first paid invoice date lands in a DIFFERENT term. These are the
+    contacts most likely to explain a headline drop in another term.
+
+    Returns {rows: [...], total_paid, count} sorted by paid amount desc.
+    """
+    from datetime import date as _date
+    from .db import get_db as _get_db, period_for as _period_for
+    with _get_db() as c:
+        rows = c.execute("""
+            SELECT s.contact_id, s.first_name, s.last_name, s.email, s.stream,
+                   s.location, s.start_date, s.class_period, s.revenue_period,
+                   s.is_deferral,
+                   COALESCE(s.price, 0) AS price,
+                   COALESCE(s.spent, 0) AS spent,
+                   (SELECT MIN(COALESCE(closed_date, invoice_date, ''))
+                      FROM invoices
+                     WHERE contact_id = s.contact_id
+                       AND status_code = 1
+                       AND COALESCE(total_paid, 0) >= 50) AS first_paid_date,
+                   (SELECT COUNT(*) FROM invoices
+                     WHERE contact_id = s.contact_id
+                       AND status_code IN (2, 3)) AS refund_count
+              FROM students s
+             WHERE s.revenue_period = ?
+        """, (target_period,)).fetchall()
+    suspects = []
+    for r in rows:
+        d = dict(r)
+        d["name"] = (f"{r['first_name'] or ''} {r['last_name'] or ''}".strip()
+                     or f"Contact {r['contact_id']}")
+        if not d["first_paid_date"]:
+            continue
+        try:
+            fp = _date.fromisoformat(d["first_paid_date"][:10])
+        except (ValueError, TypeError):
+            continue
+        derived = _period_for(fp)
+        if derived and derived != target_period:
+            d["derived_origin"] = derived
+            d["ontraport_url"] = f"https://app.ontraport.com/#!/contact/edit&id={r['contact_id']}"
+            suspects.append(d)
+    suspects.sort(key=lambda x: -x["spent"])
+    return {
+        "target_period": target_period,
+        "count": len(suspects),
+        "total_paid": sum(x["spent"] for x in suspects),
+        "rows": suspects,
+    }
+
+
 # --- Deferral revenue-period backfill ---------------------------------------
 # Adam's model: the deferral tag on ONtraport names the DESTINATION term (the
 # cohort she's moving into — "A26 Pilates Course Deferral"). The code needs
