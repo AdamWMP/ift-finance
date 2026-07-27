@@ -337,26 +337,33 @@ def admin_import_a25(request: Request):
 
 
 @app.get("/admin/deferrals", response_class=HTMLResponse)
-def admin_deferrals(request: Request, migration_period: str = "A26"):
-    """Full transparency into every currently-deferred student, refund
-    activity, AND cross-term migration audit — for each candidate `period`,
-    lists students currently anchored there whose first paid invoice date
-    lands in a different term (typical 'moved from S26' story)."""
+def admin_deferrals(request: Request,
+                     migration_period: str = "A26",
+                     moved_out_period: str = "S26"):
+    """Full transparency into who moved between terms.
+
+    `migration_period` — students CURRENTLY in this term whose invoices
+                          are from elsewhere (the 'who came in from S26?')
+    `moved_out_period` — students whose invoices landed in this term but
+                          who are now anchored ELSEWHERE (the 'who left S26?')
+    """
     return templates.TemplateResponse("deferrals.html", {
         "request": request,
         "d": queries.deferrals_diagnostic(),
         "migration": queries.term_migration_audit(migration_period),
         "migration_period": migration_period,
+        "moved_out": queries.moved_out_of_period(moved_out_period),
+        "moved_out_period": moved_out_period,
     })
 
 
 @app.get("/admin/deferrals.json")
-def admin_deferrals_json(migration_period: str = "A26"):
-    """JSON snapshot of the whole diagnostic — used to check numbers
-    from scripts / other tools without scraping the HTML page."""
+def admin_deferrals_json(migration_period: str = "A26",
+                          moved_out_period: str = "S26"):
     return {
         "deferrals": queries.deferrals_diagnostic(),
         "migration": queries.term_migration_audit(migration_period),
+        "moved_out":  queries.moved_out_of_period(moved_out_period),
     }
 
 

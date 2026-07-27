@@ -2,6 +2,77 @@
 {% block title %}Deferrals + refunds · IFT Finance{% endblock %}
 
 {% block main %}
+
+{# --- WHO LEFT: students originally in period X but now anchored elsewhere --- #}
+<section class="block" style="border-left:3px solid var(--warn);padding-left:14px">
+  <h2>Who has been removed from {{ moved_out_period }}?</h2>
+  <p class="muted small" style="margin:6px 0 12px">
+    Every student whose <b>first paid invoice</b> landed in <b>{{ moved_out_period }}</b> but whose
+    current <b>revenue_period</b> is now a different term. Most common cause: someone edited
+    their start_date in ONtraport, moving them wholesale to the new term instead of flagging
+    them as a deferral. Each entry below is money that <b>used to be</b> counted in
+    {{ moved_out_period }} and now isn't.
+  </p>
+
+  <form method="get" style="margin-bottom:10px">
+    <label class="muted small">
+      Show students who left
+      <select name="moved_out_period" onchange="this.form.submit()"
+              style="padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--ink)">
+        {% for p in ['S25','A25','S26','A26','S27'] %}
+        <option value="{{ p }}" {% if p == moved_out_period %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="migration_period" value="{{ migration_period }}">
+    </label>
+  </form>
+
+  <div class="hero" style="grid-template-columns:repeat(2,1fr);margin-bottom:12px">
+    <div class="card accent">
+      <div class="label">Students removed from {{ moved_out_period }}</div>
+      <div class="num" style="color:var(--warn)">{{ moved_out.count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">€ removed from {{ moved_out_period }} headline figures</div>
+      <div class="num" style="color:var(--warn)">€{{ "{:,.0f}".format(moved_out.total_paid_removed) }}</div>
+    </div>
+  </div>
+
+  <table class="students">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Stream / location</th>
+        <th>Start date now</th>
+        <th>First paid</th>
+        <th>Moved to</th>
+        <th>Deferral?</th>
+        <th class="num">Paid (missing from {{ moved_out_period }})</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in moved_out.rows %}
+      <tr>
+        <td>
+          <div class="name">{{ s.name }}</div>
+          <div class="muted small">CID {{ s.contact_id }}</div>
+        </td>
+        <td class="muted small">{{ s.stream }} · {{ s.location or '—' }}</td>
+        <td class="muted small">{{ s.start_date or '—' }}</td>
+        <td class="muted small">{{ s.first_paid_date }}</td>
+        <td><b style="color:var(--warn)">{{ s.moved_to }}</b></td>
+        <td class="muted small">{% if s.is_deferral %}<span style="color:var(--good)">Yes ✓</span>{% else %}<span style="color:var(--bad)">No — not flagged</span>{% endif %}</td>
+        <td class="num" style="color:var(--warn)">€{{ "{:,.0f}".format(s.spent) }}</td>
+        <td><a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted small">Nothing has moved out of {{ moved_out_period }} — invoice history matches current anchors for everyone.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
 <section class="block">
   <h2>Deferrals + refunds</h2>
   <p class="muted small">
