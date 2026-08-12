@@ -45,15 +45,22 @@ templates.env.globals["asset_version"] = ASSET_VERSION
 
 PUBLIC_PATHS = {"/login", "/static", "/health"}
 
-# Dashboard View = the commercial picture (revenue, targets, the book).
-# The accounts login is blocked from all of it (Adam, 12 Aug 2026);
-# everything else — debt collection, admin work, activity, transactions —
-# stays open to them.
-DASHBOARD_PATHS = ("/board", "/group", "/pathway", "/method", "/location")
+# The accounts login (Shauna) sees ONLY these (Adam, 12 Aug 2026):
+# debt collection, admin work, activity and transactions. Everything else —
+# Dashboard View, Deferrals, Audit, Marketing, Cert Export — is the
+# commercial picture and stays closed.
+#
+# Deliberately an ALLOWLIST, not a blocklist: a new page added to the board
+# later is invisible to accounts until someone opts it in, so revenue can
+# never leak in by accident.
+ACCOUNTS_PATHS = (
+    "/admin/chase", "/admin/work", "/admin/activity", "/admin/transactions",
+    "/login", "/logout", "/health", "/static", "/api", "/_meta", "/admin/sync",
+)
 
 def _accounts_allowed(path: str) -> bool:
     p = (path or "").split("?")[0]
-    return not any(p == d or p.startswith(d + "/") for d in DASHBOARD_PATHS)
+    return any(p == a or p.startswith(a + "/") or p.startswith(a + ".") for a in ACCOUNTS_PATHS)
 
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
