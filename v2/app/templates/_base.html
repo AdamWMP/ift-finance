@@ -17,8 +17,12 @@
   <div class="brand">
     IFT Finance
     <nav class="navlinks">
+      {# Accounts-level logins never see Dashboard View (server also blocks
+         the routes — see auth_gate in main.py). #}
+      {% if request.state.show_dashboard %}
       <a href="/board{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
          class="navlink {% if request.url.path == '/board' or request.url.path == '/group' or request.url.path == '/pathway' or request.url.path == '/method' or request.url.path == '/location' %}active{% endif %}">Dashboard View</a>
+      {% endif %}
       <a href="/admin/chase{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"
          class="navlink {% if request.url.path.startswith('/admin/chase') %}active{% endif %}">Debt Collection View</a>
       <a href="/admin/work{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}"

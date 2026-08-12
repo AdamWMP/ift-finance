@@ -18,7 +18,7 @@ from threading import Thread
 from fastapi import BackgroundTasks
 
 from . import queries
-from .auth import COOKIE, MAX_AGE, PASSPHRASE, is_authed, make_token
+from .auth import COOKIE, MAX_AGE, PASSPHRASE, ACCOUNTS_PASSPHRASE, is_authed, make_token, can_see_dashboard, role_of
 from .db import init_db, get_meta, set_meta
 
 HERE = Path(__file__).resolve().parent
@@ -45,13 +45,31 @@ templates.env.globals["asset_version"] = ASSET_VERSION
 
 PUBLIC_PATHS = {"/login", "/static", "/health"}
 
+# Dashboard View = the commercial picture (revenue, targets, the book).
+# The accounts login is blocked from all of it (Adam, 12 Aug 2026);
+# everything else — debt collection, admin work, activity, transactions —
+# stays open to them.
+DASHBOARD_PATHS = ("/board", "/group", "/pathway", "/method", "/location")
+
+def _accounts_allowed(path: str) -> bool:
+    p = (path or "").split("?")[0]
+    return not any(p == d or p.startswith(d + "/") for d in DASHBOARD_PATHS)
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
+    # Default set first: public pages (login) render _base.html too.
+    request.state.show_dashboard = True
     if any(path == p or path.startswith(p+"/") for p in PUBLIC_PATHS):
         return await call_next(request)
     if not is_authed(request):
         return RedirectResponse(url=f"/login?next={path}", status_code=302)
+    allowed = can_see_dashboard(request)
+    # Templates read this for the nav; the check below is the real gate —
+    # hiding a link alone wouldn't stop someone typing /board.
+    request.state.show_dashboard = allowed
+    if not allowed and not _accounts_allowed(path):
+        return RedirectResponse(url="/admin/chase", status_code=302)
     return await call_next(request)
 
 @app.get("/health")
@@ -161,14 +179,22 @@ def login_form(request: Request, next: str = "/board", error: str = ""):
 
 @app.post("/login")
 def login_submit(request: Request, passphrase: str = Form(...), next: str = Form("/board")):
-    if passphrase != PASSPHRASE:
+    # Two passphrases, two access levels — the accounts one lands on the
+    # chase list and never sees Dashboard View.
+    if passphrase == PASSPHRASE:
+        role, landing = "full", (next or "/board")
+    elif passphrase == ACCOUNTS_PASSPHRASE:
+        role = "accounts"
+        landing = next if (next and _accounts_allowed(next)) else "/admin/chase"
+    else:
         return RedirectResponse(url=f"/login?next={next}&error=1", status_code=302)
-    resp = RedirectResponse(url=next or "/board", status_code=302)
-    resp.set_cookie(COOKIE, make_token(), max_age=MAX_AGE, httponly=True, samesite="lax")
+    resp = RedirectResponse(url=landing, status_code=302)
+    resp.set_cookie(COOKIE, make_token(role), max_age=MAX_AGE, httponly=True, samesite="lax")
     return resp
 
 @app.get("/", include_in_schema=False)
-def root(): return RedirectResponse(url="/board")
+def root(request: Request):
+    return RedirectResponse(url="/board" if can_see_dashboard(request) else "/admin/chase")
 
 @app.get("/pathway", response_class=HTMLResponse)
 def pathway_view(request: Request, name: str, period: str = "S26"):
