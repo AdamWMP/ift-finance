@@ -378,15 +378,12 @@ def admin_students(request: Request,
                     include_dropoffs: str = "on",
                     start_dates: list[str] = Query(default=[]),
                     q: str | None = None):
-    """Unified all-streams student browser. Every student across every stream
-    in one flat, filterable list — with a configurable CSV export."""
-    data = queries.all_students(
-        period=period or None, stream=stream or None, location=location or None,
-        paid_bucket=paid_bucket or None,
-        include_dropoffs=(include_dropoffs == "on"),
-        start_dates=start_dates or None,
-        q=q or None,
-    )
+    """Unified all-streams student browser. Sends the FULL student set as
+    JSON — the page filters/sorts/exports client-side so every keystroke
+    updates the table instantly (Google-Sheets style, no page reloads)."""
+    # Send everything the client might filter over. Client-side JS handles
+    # all subsequent filtering + sorting + export.
+    all_data = queries.all_students(include_dropoffs=True)
     from .db import get_db as _get_db
     with _get_db() as c:
         streams = [r[0] for r in c.execute(
@@ -412,9 +409,48 @@ def admin_students(request: Request,
         g["total"] += r["students"]
     start_date_options = sorted(start_date_groups.values(),
                                  key=lambda x: x["date"], reverse=True)
+    # Slim each row for JSON payload — only the fields the client renders
+    payload = [{
+        "contact_id":     r["contact_id"],
+        "first_name":     r.get("first_name") or "",
+        "last_name":      r.get("last_name") or "",
+        "name":           r["name"],
+        "email":          r.get("email") or "",
+        "phone":          r.get("phone") or "",
+        "stream":         r["stream"],
+        "qualification":  r.get("qualification") or "",
+        "pathway":        r.get("pathway") or "",
+        "location":       r.get("location") or "",
+        "timetable":      r.get("timetable") or "",
+        "start_date":     r.get("start_date") or "",
+        "class_period":   r.get("class_period") or "",
+        "revenue_period": r.get("revenue_period") or "",
+        "price":          r["price"],
+        "spent":          r["spent"],
+        "outstanding":    r["outstanding"],
+        "paid_pct":       r["paid_pct"],
+        "payment_plan":   r.get("payment_plan") or "",
+        "payment_method": r.get("payment_method") or "",
+        "payment_status": r.get("payment_status") or "",
+        "is_deferral":    r.get("is_deferral") or 0,
+        "is_dropoff":     r.get("is_dropoff") or 0,
+        "cert_issued":    r.get("cert_issued") or 0,
+        "ontraport_url":  r["ontraport_url"],
+    } for r in all_data["rows"]]
+    # Filters that the page hydrates from — used only for initial state,
+    # after which the client owns state.
+    initial_filters = {
+        "q": q or "",
+        "period": period or "",
+        "stream": stream or "",
+        "location": location or "",
+        "paid_bucket": paid_bucket or "",
+        "include_dropoffs": (include_dropoffs == "on"),
+    }
     return templates.TemplateResponse("students.html", {
         "request": request,
-        "data": data,
+        "data": {"filters": initial_filters},
+        "students_json": payload,
         "streams": streams,
         "locations": locations,
         "available_periods": queries.periods_with_data(),

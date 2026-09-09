@@ -4,210 +4,385 @@
 {% block main %}
 
 <section class="block">
-  <h2>All students — every stream in one list</h2>
-  <p class="muted small">
-    Combined view of every student across PT, Pilates, Reformer, and any
-    other stream tracked in the finance dashboard. Filter by term / stream /
-    location / % paid, then export just the fields you need.
+  <h2 style="margin-bottom:6px">Students</h2>
+  <p class="muted small" style="margin-top:0">
+    Every student across every stream — filter and sort live, then export
+    the exact list you see.
   </p>
 
-  {# ---- Filter bar ---- #}
-  <form method="get" action="/admin/students" class="tx-form" style="margin-top:14px">
-    <div class="tx-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
-      <label>Search
-        <input name="q" value="{{ data.filters.q or '' }}" placeholder="name · email · qual · CID"
-               autocomplete="off">
-      </label>
-      <label>Term
-        <select name="period">
-          <option value="">All terms</option>
-          {% for p in available_periods %}
-          <option value="{{ p }}" {% if data.filters.period == p %}selected{% endif %}>{{ p }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Stream
-        <select name="stream">
-          <option value="">All streams</option>
-          {% for s in streams %}
-          <option value="{{ s }}" {% if data.filters.stream == s %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Location
-        <select name="location">
-          <option value="">All locations</option>
-          {% for l in locations %}
-          <option value="{{ l }}" {% if data.filters.location == l %}selected{% endif %}>{{ l }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>% Paid
-        <select name="paid_bucket">
-          <option value="">All</option>
-          <option value="above_50" {% if data.filters.paid_bucket == 'above_50' %}selected{% endif %}>Above 50%</option>
-          <option value="below_50" {% if data.filters.paid_bucket == 'below_50' %}selected{% endif %}>50% or below</option>
-          <option value="paid"     {% if data.filters.paid_bucket == 'paid' %}selected{% endif %}>Fully paid (100%)</option>
-          <option value="unpaid"   {% if data.filters.paid_bucket == 'unpaid' %}selected{% endif %}>Unpaid (0%)</option>
-        </select>
-      </label>
-      <label style="align-self:end">
-        <input type="checkbox" name="include_dropoffs" {% if data.filters.include_dropoffs %}checked{% endif %}>
-        Include drop-offs
-      </label>
-      <label style="align-self:end">&nbsp;
-        <button type="submit">Apply filters</button>
-      </label>
-    </div>
+  {# ---- Compact filter bar (all inputs auto-apply on change) ---- #}
+  <form id="stu-form" method="get" action="/admin/students" style="display:grid;grid-template-columns:2fr repeat(4,1fr) auto;gap:8px;align-items:end;margin:10px 0 12px">
+    <label class="stu-lbl">Search
+      <input id="f-search" name="q" value="{{ data.filters.q or '' }}"
+             placeholder="name · email · qual · CID" autocomplete="off">
+    </label>
+    <label class="stu-lbl">Term
+      <select id="f-period" name="period">
+        <option value="">All</option>
+        {% for p in available_periods %}
+        <option value="{{ p }}" {% if data.filters.period == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="stu-lbl">Stream
+      <select id="f-stream" name="stream">
+        <option value="">All</option>
+        {% for s in streams %}<option value="{{ s }}" {% if data.filters.stream == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="stu-lbl">Location
+      <select id="f-location" name="location">
+        <option value="">All</option>
+        {% for l in locations %}<option value="{{ l }}" {% if data.filters.location == l %}selected{% endif %}>{{ l }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="stu-lbl">% Paid
+      <select id="f-paid" name="paid_bucket">
+        <option value="">All</option>
+        <option value="above_50" {% if data.filters.paid_bucket == 'above_50' %}selected{% endif %}>Above 50%</option>
+        <option value="below_50" {% if data.filters.paid_bucket == 'below_50' %}selected{% endif %}>50% or below</option>
+        <option value="paid"     {% if data.filters.paid_bucket == 'paid' %}selected{% endif %}>Fully paid</option>
+        <option value="unpaid"   {% if data.filters.paid_bucket == 'unpaid' %}selected{% endif %}>Unpaid</option>
+      </select>
+    </label>
+    <label class="stu-lbl" style="align-self:end;flex-direction:row;align-items:center;gap:6px">
+      <input type="checkbox" id="f-dropoff" name="include_dropoffs" {% if data.filters.include_dropoffs %}checked{% endif %}>
+      <span class="muted small">drop-offs</span>
+    </label>
+  </form>
 
-    {# ---- Multi-select start-date filter (Google-Sheets style) ---- #}
-    <details style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px" {% if selected_start_dates %}open{% endif %}>
-      <summary style="cursor:pointer;font-weight:600;font-size:13px">
-        Start dates
-        {% if selected_start_dates %}<span class="muted small">— {{ selected_start_dates|length }} of {{ start_date_options|length }} selected</span>
-        {% else %}<span class="muted small">— all included (tick to narrow)</span>{% endif %}
-      </summary>
-      <div style="margin-top:10px">
-        <div style="margin-bottom:8px">
-          <input type="text" id="start-date-search" placeholder="Filter start dates…"
-                 style="width:100%;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:12px"
-                 oninput="[...document.querySelectorAll('.sd-item')].forEach(el=>{el.style.display=el.dataset.searchable.toLowerCase().includes(this.value.toLowerCase())?'':'none';})">
-        </div>
-        <div style="display:flex;gap:12px;margin-bottom:8px" class="muted small">
-          <a href="#" onclick="document.querySelectorAll('input[name=start_dates]').forEach(x=>x.checked=true);return false;">Select all</a>
-          <a href="#" onclick="document.querySelectorAll('input[name=start_dates]').forEach(x=>x.checked=false);return false;">Clear</a>
-          <a href="#" onclick="const y=new Date().getFullYear();document.querySelectorAll('input[name=start_dates]').forEach(x=>{x.checked=(x.value||'').startsWith(String(y)) || (x.value||'').startsWith(String(y+1))});return false;">Select current + next year only</a>
-        </div>
-        <div style="max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px">
-          {% for opt in start_date_options %}
-          <label class="sd-item" data-searchable="{{ opt.date }} {% for s in opt.streams %}{{ s.stream }} {% endfor %}"
-                 style="display:flex;align-items:center;gap:10px;padding:4px 8px;font-size:12px;border-radius:4px;cursor:pointer">
-            <input type="checkbox" name="start_dates" value="{{ opt.date }}"
-                   {% if opt.date in selected_start_dates %}checked{% endif %}>
-            <span style="min-width:100px;font-family:ui-monospace,monospace">{{ opt.date }}</span>
-            <span class="muted small">
-              {% for s in opt.streams %}{{ s.stream }} · {{ s.count }}{% if not loop.last %} · {% endif %}{% endfor %}
-              <b>(total {{ opt.total }})</b>
-            </span>
-          </label>
-          {% else %}
-          <div class="muted small" style="padding:8px">No start dates in the database.</div>
-          {% endfor %}
-        </div>
-        <div style="margin-top:8px;text-align:right">
-          <button type="submit" style="padding:6px 12px">Apply date filter</button>
-        </div>
+  {# ---- Advanced (start-date picker + reset) — collapsed by default ---- #}
+  <details id="stu-adv" style="margin-bottom:10px;border:1px solid var(--line);border-radius:8px;padding:8px 12px" {% if selected_start_dates %}open{% endif %}>
+    <summary style="cursor:pointer;font-weight:600;font-size:12px;color:var(--muted)">
+      Advanced: pick specific start dates
+      <span id="date-chip-count" class="muted small"></span>
+    </summary>
+    <div style="margin-top:10px">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <input type="text" id="date-search" placeholder="Filter dates (e.g. sep 2026)"
+               style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:12px">
+        <a href="#" onclick="pickDates('all');return false;" class="muted small">All</a>
+        <a href="#" onclick="pickDates('clear');return false;" class="muted small">Clear</a>
+        <a href="#" onclick="pickDates('current');return false;" class="muted small">Current + next yr</a>
       </div>
-    </details>
-  </form>
-
-  {# ---- Counts hero ---- #}
-  <div class="hero" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:14px">
-    <div class="card"><div class="label">Total matching</div><div class="num">{{ data.counts.total }}</div></div>
-    <div class="card accent"><div class="label">Above 50% paid</div><div class="num">{{ data.counts.above_50 }}</div></div>
-    <div class="card"><div class="label">50% or below</div><div class="num">{{ data.counts.below_50 }}</div></div>
-    <div class="card"><div class="label">Fully paid</div><div class="num" style="color:var(--good)">{{ data.counts.fully_paid }}</div></div>
-    <div class="card"><div class="label">Unpaid</div><div class="num" style="color:var(--bad)">{{ data.counts.unpaid }}</div></div>
-    <div class="card"><div class="label">Deferrals</div><div class="num">{{ data.counts.deferrals }}</div></div>
-    <div class="card"><div class="label">Drop-offs</div><div class="num">{{ data.counts.dropoffs }}</div></div>
-  </div>
-  <div class="muted small" style="margin-top:6px">
-    <b>Total price</b>: €{{ "{:,.0f}".format(data.counts.total_price) }}
-    · <b>Total paid</b>: €{{ "{:,.0f}".format(data.counts.total_paid) }}
-    · <b>Total outstanding</b>: €{{ "{:,.0f}".format(data.counts.total_outstanding) }}
-  </div>
-</section>
-
-{# ---- Configurable CSV export ---- #}
-<section class="block">
-  <h2>Export</h2>
-  <p class="muted small">
-    Tick the columns you want, then hit Export. The current filters above are
-    applied to the export automatically — so the CSV matches what's on screen.
-  </p>
-  <form method="post" action="/admin/students-export.csv" class="tx-form">
-    {# Pass filters through as hidden inputs #}
-    <input type="hidden" name="period"           value="{{ data.filters.period or '' }}">
-    <input type="hidden" name="stream"           value="{{ data.filters.stream or '' }}">
-    <input type="hidden" name="location"         value="{{ data.filters.location or '' }}">
-    <input type="hidden" name="paid_bucket"      value="{{ data.filters.paid_bucket or '' }}">
-    <input type="hidden" name="q"                value="{{ data.filters.q or '' }}">
-    {% if data.filters.include_dropoffs %}<input type="hidden" name="include_dropoffs" value="on">{% endif %}
-    {% for d in selected_start_dates %}<input type="hidden" name="start_dates" value="{{ d }}">{% endfor %}
-
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;margin-bottom:12px">
-      {% for key, label in all_fields %}
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;cursor:pointer">
-        <input type="checkbox" name="fields" value="{{ key }}"
-               {% if key in default_fields %}checked{% endif %}>
-        <span>{{ label }}</span>
-      </label>
-      {% endfor %}
+      <div style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:6px">
+        {% for opt in start_date_options %}
+        <label class="sd-item" data-date="{{ opt.date }}"
+               data-search="{{ opt.date }} {% for s in opt.streams %}{{ s.stream }} {% endfor %}"
+               style="display:flex;align-items:center;gap:10px;padding:5px 10px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--line)">
+          <input type="checkbox" class="sd-cb" value="{{ opt.date }}"
+                 {% if opt.date in selected_start_dates %}checked{% endif %}>
+          <span style="min-width:100px;font-family:ui-monospace,monospace">{{ opt.date }}</span>
+          <span class="muted small" style="flex:1">
+            {% for s in opt.streams %}{{ s.stream }} · {{ s.count }}{% if not loop.last %} · {% endif %}{% endfor %}
+          </span>
+          <span class="muted small">{{ opt.total }}</span>
+        </label>
+        {% endfor %}
+      </div>
     </div>
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <span class="muted small">
-        <a href="#" onclick="document.querySelectorAll('input[name=fields]').forEach(x=>x.checked=true);return false;">Select all</a>
-        ·
-        <a href="#" onclick="document.querySelectorAll('input[name=fields]').forEach(x=>x.checked=false);return false;">Clear</a>
-        ·
-        <a href="#" onclick="document.querySelectorAll('input[name=fields]').forEach(x=>x.checked=false);['name','qualification','start_date','location','timetable'].forEach(k=>{const el=document.querySelector(`input[name=fields][value=${k}]`);if(el)el.checked=true;});return false;">Reset to defaults</a>
-      </span>
-      <button type="submit" class="csv-btn">⬇ Export CSV</button>
-    </div>
-  </form>
+  </details>
+
+  {# ---- Active filter chips ---- #}
+  <div id="stu-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:28px"></div>
+
+  {# ---- Live count + total bar ---- #}
+  <div id="stu-summary" class="muted small" style="padding:8px 12px;background:var(--panel2);border-radius:8px;margin-bottom:10px;font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <span></span>
+  </div>
+
+  {# ---- Table ---- #}
+  <div style="overflow-x:auto">
+    <table class="students" id="stu-table">
+      <thead>
+        <tr>
+          <th class="stu-th" data-col="name"          data-type="text">Name <span class="sort-ind"></span></th>
+          <th class="stu-th" data-col="stream"        data-type="text">Stream <span class="sort-ind"></span></th>
+          <th class="stu-th" data-col="qualification" data-type="text">Course <span class="sort-ind"></span></th>
+          <th class="stu-th" data-col="location"      data-type="text">Location <span class="sort-ind"></span></th>
+          <th class="stu-th" data-col="start_date"    data-type="date">Start <span class="sort-ind">▼</span></th>
+          <th class="stu-th" data-col="timetable"     data-type="text">Timetable <span class="sort-ind"></span></th>
+          <th class="stu-th num" data-col="price"     data-type="num">Price <span class="sort-ind"></span></th>
+          <th class="stu-th num" data-col="spent"     data-type="num">Paid <span class="sort-ind"></span></th>
+          <th class="stu-th num" data-col="paid_pct"  data-type="num">% Paid <span class="sort-ind"></span></th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="stu-rows"></tbody>
+    </table>
+  </div>
 </section>
 
-{# ---- Student table ---- #}
+{# ---- Export section (collapsed by default so it's out of the way) ---- #}
 <section class="block">
-  <h2>Matching students</h2>
-  <table class="students">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Stream</th>
-        <th>Course</th>
-        <th>Location</th>
-        <th>Start</th>
-        <th>Timetable</th>
-        <th class="num">Price</th>
-        <th class="num">Paid</th>
-        <th class="num">% Paid</th>
-        <th>Status</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for s in data.rows %}
-      <tr class="{% if s.is_deferral %}deferral{% endif %}">
-        <td>
-          <div class="name">{{ s.name }}</div>
-          <div class="muted small">CID {{ s.contact_id }}{% if s.email %} · {{ s.email }}{% endif %}</div>
-        </td>
-        <td><b>{{ s.stream }}</b></td>
-        <td class="muted small">{{ s.qualification or '—' }}</td>
-        <td class="muted small">{{ s.location or '—' }}</td>
-        <td class="muted small">{{ s.start_date or '—' }}</td>
-        <td class="muted small">{{ s.timetable or '—' }}</td>
-        <td class="num">€{{ "{:,.0f}".format(s.price) }}</td>
-        <td class="num">€{{ "{:,.0f}".format(s.spent) }}</td>
-        <td class="num" style="color:{{ 'var(--good)' if s.paid_pct >= 100 else 'var(--warn)' if s.paid_pct >= 50 else 'var(--bad)' }}">
-          {{ "{:.0f}".format(s.paid_pct) }}%
-        </td>
-        <td>
-          {% if s.is_deferral %}<span class="status deferred">Deferral</span>
-          {% elif s.is_dropoff %}<span class="status behind">Drop-off</span>
-          {% elif s.paid_pct >= 100 %}<span class="status complete">Paid</span>
-          {% elif s.paid_pct >= 50 %}<span class="status cert">Cert-ready</span>
-          {% elif s.paid_pct > 0 %}<span class="status ok">In progress</span>
-          {% else %}<span class="status behind">Unpaid</span>{% endif %}
-        </td>
-        <td><a class="btn" href="{{ s.ontraport_url }}" target="_blank" rel="noopener">↗</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="11" class="muted small">No students match these filters.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <details {% if selected_start_dates %}open{% endif %}>
+    <summary style="cursor:pointer;font-size:14px;font-weight:600">
+      ⬇ Export CSV — using the exact list above
+      <span class="muted small" style="font-weight:normal">(click to pick which columns to include)</span>
+    </summary>
+    <div style="margin-top:12px">
+      <p class="muted small" style="margin:0 0 10px">
+        Defaults are pre-ticked (Name · Course · Start · Location · Timetable).
+        Tick more to add columns. The CSV downloads whatever is on your screen right now.
+      </p>
+      <div id="stu-fields" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:4px;margin-bottom:12px">
+        {% for key, label in all_fields %}
+        <label style="display:flex;align-items:center;gap:8px;padding:4px 8px;font-size:12px;border:1px solid var(--line);border-radius:4px;cursor:pointer">
+          <input type="checkbox" class="fld-cb" data-key="{{ key }}"
+                 {% if key in default_fields %}checked{% endif %}>
+          <span>{{ label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="muted small">
+          <a href="#" onclick="pickFields('all');return false;">All</a> ·
+          <a href="#" onclick="pickFields('clear');return false;">Clear</a> ·
+          <a href="#" onclick="pickFields('default');return false;">Defaults</a>
+        </span>
+        <button type="button" class="csv-btn" onclick="exportCsv()">⬇ Download CSV</button>
+      </div>
+    </div>
+  </details>
 </section>
+
+<style>
+.stu-lbl{display:flex;flex-direction:column;gap:3px;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+.stu-lbl input, .stu-lbl select{padding:7px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:13px;font-family:inherit;text-transform:none;letter-spacing:0;font-weight:400}
+.stu-lbl input:focus, .stu-lbl select:focus{outline:none;border-color:var(--accent)}
+.stu-th{cursor:pointer;user-select:none;position:relative}
+.stu-th:hover{background:var(--panel2)}
+.stu-th .sort-ind{color:var(--accent);font-size:10px;margin-left:2px}
+.stu-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--accent);color:var(--bg);border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+.stu-chip:hover{opacity:.85}
+.stu-chip-x{opacity:.7;margin-left:2px}
+</style>
+
+<script id="stu-data" type="application/json">{{ students_json | tojson }}</script>
+<script>
+(function(){
+  const ALL = JSON.parse(document.getElementById('stu-data').textContent);
+  const state = {
+    filters: {
+      q: '{{ data.filters.q or "" }}',
+      period: '{{ data.filters.period or "" }}',
+      stream: '{{ data.filters.stream or "" }}',
+      location: '{{ data.filters.location or "" }}',
+      paid_bucket: '{{ data.filters.paid_bucket or "" }}',
+      include_dropoffs: {{ 'true' if data.filters.include_dropoffs else 'false' }},
+      start_dates: new Set({{ selected_start_dates | list | tojson }}),
+    },
+    sort: { col: 'start_date', dir: 'desc' },
+  };
+
+  // --- filter logic (all AND) ---
+  function passes(r) {
+    const f = state.filters;
+    if (!f.include_dropoffs && r.is_dropoff) return false;
+    if (f.q) {
+      const q = f.q.toLowerCase();
+      const hay = ((r.first_name||'')+' '+(r.last_name||'')+' '+(r.email||'')+' '+(r.qualification||'')+' '+(r.location||'')+' '+String(r.contact_id||'')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (f.period) {
+      if (r.class_period !== f.period && r.revenue_period !== f.period) return false;
+    }
+    if (f.stream && r.stream !== f.stream) return false;
+    if (f.location && (r.location||'—') !== f.location) return false;
+    if (f.paid_bucket === 'above_50' && !(r.paid_pct > 50)) return false;
+    if (f.paid_bucket === 'below_50' && !(r.paid_pct <= 50)) return false;
+    if (f.paid_bucket === 'paid'     && !(r.paid_pct >= 100)) return false;
+    if (f.paid_bucket === 'unpaid'   && !(r.paid_pct === 0)) return false;
+    if (f.start_dates.size > 0 && !f.start_dates.has(r.start_date || '')) return false;
+    return true;
+  }
+
+  function cmp(a, b, col, type, dir) {
+    let av = a[col], bv = b[col];
+    if (type === 'num') { av = +av || 0; bv = +bv || 0; }
+    else if (type === 'date') { av = av || ''; bv = bv || ''; }
+    else { av = String(av||'').toLowerCase(); bv = String(bv||'').toLowerCase(); }
+    if (av < bv) return dir === 'asc' ? -1 : 1;
+    if (av > bv) return dir === 'asc' ?  1 : -1;
+    return 0;
+  }
+
+  function typeOfCol(col) {
+    const th = document.querySelector(`.stu-th[data-col="${col}"]`);
+    return th ? th.dataset.type : 'text';
+  }
+
+  function statusClass(r) {
+    if (r.is_deferral) return ['deferred', 'Deferral'];
+    if (r.is_dropoff)  return ['behind', 'Drop-off'];
+    if (r.paid_pct >= 100) return ['complete', 'Paid'];
+    if (r.paid_pct >= 50)  return ['cert', 'Cert-ready'];
+    if (r.paid_pct > 0)    return ['ok', 'In progress'];
+    return ['behind', 'Unpaid'];
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function eur(n) { return '€' + (Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+
+  function renderRows(rows) {
+    const tbody = document.getElementById('stu-rows');
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="11" class="muted small">No students match. Widen the filters.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const [cls, label] = statusClass(r);
+      const pctColor = r.paid_pct >= 100 ? 'var(--good)' : r.paid_pct >= 50 ? 'var(--warn)' : 'var(--bad)';
+      return `<tr class="${r.is_deferral ? 'deferral' : ''}">
+        <td><div class="name">${esc(r.name)}</div><div class="muted small">CID ${esc(r.contact_id)}${r.email ? ' · ' + esc(r.email) : ''}</div></td>
+        <td><b>${esc(r.stream)}</b></td>
+        <td class="muted small">${esc(r.qualification||'—')}</td>
+        <td class="muted small">${esc(r.location||'—')}</td>
+        <td class="muted small">${esc(r.start_date||'—')}</td>
+        <td class="muted small">${esc(r.timetable||'—')}</td>
+        <td class="num">${eur(r.price)}</td>
+        <td class="num">${eur(r.spent)}</td>
+        <td class="num" style="color:${pctColor}">${Math.round(r.paid_pct)}%</td>
+        <td><span class="status ${cls}">${label}</span></td>
+        <td><a class="btn" href="${esc(r.ontraport_url)}" target="_blank" rel="noopener">↗</a></td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderChips() {
+    const f = state.filters;
+    const chips = [];
+    if (f.q)        chips.push({label:`Search: "${f.q}"`, clear: () => { f.q = ''; document.getElementById('f-search').value = ''; }});
+    if (f.period)   chips.push({label:`Term: ${f.period}`, clear: () => { f.period = ''; document.getElementById('f-period').value = ''; }});
+    if (f.stream)   chips.push({label:`Stream: ${f.stream}`, clear: () => { f.stream = ''; document.getElementById('f-stream').value = ''; }});
+    if (f.location) chips.push({label:`Location: ${f.location}`, clear: () => { f.location = ''; document.getElementById('f-location').value = ''; }});
+    if (f.paid_bucket) {
+      const lbl = {above_50:'>50% paid', below_50:'≤50% paid', paid:'Fully paid', unpaid:'Unpaid'}[f.paid_bucket];
+      chips.push({label:lbl, clear: () => { f.paid_bucket = ''; document.getElementById('f-paid').value = ''; }});
+    }
+    if (!f.include_dropoffs) chips.push({label:'No drop-offs', clear: () => { f.include_dropoffs = true; document.getElementById('f-dropoff').checked = true; }});
+    if (f.start_dates.size > 0) chips.push({label:`Dates: ${f.start_dates.size} selected`, clear: () => { f.start_dates.clear(); document.querySelectorAll('.sd-cb').forEach(cb => cb.checked = false); }});
+    const el = document.getElementById('stu-chips');
+    el.innerHTML = chips.length === 0
+      ? '<span class="muted small">No active filters</span>'
+      : chips.map((c, i) => `<span class="stu-chip" data-i="${i}">${esc(c.label)} <span class="stu-chip-x">×</span></span>`).join('');
+    el.querySelectorAll('.stu-chip').forEach((el, i) => {
+      el.addEventListener('click', () => { chips[i].clear(); render(); });
+    });
+  }
+
+  function render() {
+    const rows = ALL.filter(passes);
+    const type = typeOfCol(state.sort.col);
+    rows.sort((a, b) => cmp(a, b, state.sort.col, type, state.sort.dir));
+    // sort indicator on the active column
+    document.querySelectorAll('.stu-th .sort-ind').forEach(el => el.textContent = '');
+    const ind = document.querySelector(`.stu-th[data-col="${state.sort.col}"] .sort-ind`);
+    if (ind) ind.textContent = state.sort.dir === 'asc' ? '▲' : '▼';
+    // summary bar
+    const totalPrice = rows.reduce((s,r) => s + (r.price||0), 0);
+    const totalPaid  = rows.reduce((s,r) => s + (r.spent||0), 0);
+    const totalOut   = rows.reduce((s,r) => s + Math.max((r.price||0)-(r.spent||0), 0), 0);
+    document.getElementById('stu-summary').innerHTML =
+      `<span><b>${rows.length}</b> of ${ALL.length} students match</span>` +
+      `<span>Total price ${eur(totalPrice)} · Paid ${eur(totalPaid)} · Outstanding ${eur(totalOut)}</span>`;
+    document.getElementById('date-chip-count').textContent =
+      state.filters.start_dates.size > 0 ? ` — ${state.filters.start_dates.size} selected` : '';
+    renderChips();
+    renderRows(rows);
+    window._visibleRows = rows;
+  }
+
+  // --- Wire up filter inputs (instant, no submit) ---
+  document.getElementById('f-search').addEventListener('input', e => { state.filters.q = e.target.value; render(); });
+  document.getElementById('f-period').addEventListener('change', e => { state.filters.period = e.target.value; render(); });
+  document.getElementById('f-stream').addEventListener('change', e => { state.filters.stream = e.target.value; render(); });
+  document.getElementById('f-location').addEventListener('change', e => { state.filters.location = e.target.value; render(); });
+  document.getElementById('f-paid').addEventListener('change', e => { state.filters.paid_bucket = e.target.value; render(); });
+  document.getElementById('f-dropoff').addEventListener('change', e => { state.filters.include_dropoffs = e.target.checked; render(); });
+  document.getElementById('stu-form').addEventListener('submit', e => e.preventDefault()); // never actually submit
+
+  // Start-date checkboxes
+  document.querySelectorAll('.sd-cb').forEach(cb => cb.addEventListener('change', () => {
+    if (cb.checked) state.filters.start_dates.add(cb.value);
+    else state.filters.start_dates.delete(cb.value);
+    render();
+  }));
+  document.getElementById('date-search').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('.sd-item').forEach(el => {
+      el.style.display = el.dataset.search.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  window.pickDates = function(mode) {
+    if (mode === 'all') {
+      document.querySelectorAll('.sd-cb').forEach(cb => { cb.checked = true; state.filters.start_dates.add(cb.value); });
+    } else if (mode === 'clear') {
+      document.querySelectorAll('.sd-cb').forEach(cb => cb.checked = false);
+      state.filters.start_dates.clear();
+    } else if (mode === 'current') {
+      const y = new Date().getFullYear();
+      state.filters.start_dates.clear();
+      document.querySelectorAll('.sd-cb').forEach(cb => {
+        const keep = cb.value.startsWith(String(y)) || cb.value.startsWith(String(y+1));
+        cb.checked = keep;
+        if (keep) state.filters.start_dates.add(cb.value);
+      });
+    }
+    render();
+  };
+
+  // Sortable columns
+  document.querySelectorAll('.stu-th').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (state.sort.col === col) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
+      else { state.sort.col = col; state.sort.dir = th.dataset.type === 'text' ? 'asc' : 'desc'; }
+      render();
+    });
+  });
+
+  // Field-picker helpers
+  window.pickFields = function(mode) {
+    const defaults = {{ default_fields | tojson }};
+    document.querySelectorAll('.fld-cb').forEach(cb => {
+      if (mode === 'all') cb.checked = true;
+      else if (mode === 'clear') cb.checked = false;
+      else if (mode === 'default') cb.checked = defaults.includes(cb.dataset.key);
+    });
+  };
+
+  const FIELD_LABELS = {{ all_fields | tojson }};
+  window.exportCsv = function() {
+    const rows = window._visibleRows || [];
+    const fields = [...document.querySelectorAll('.fld-cb')].filter(cb => cb.checked).map(cb => cb.dataset.key);
+    if (fields.length === 0) { alert('Tick at least one field.'); return; }
+    const labelByKey = Object.fromEntries(FIELD_LABELS);
+    const headers = fields.map(k => labelByKey[k] || k);
+    const escCsv = v => {
+      if (v == null) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = [headers.join(',')].concat(
+      rows.map(r => fields.map(k => escCsv(r[k])).join(','))
+    ).join('\n');
+    const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ift-students-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  render();
+})();
+</script>
 
 {% endblock %}
