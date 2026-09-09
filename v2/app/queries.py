@@ -2130,6 +2130,143 @@ def attendance_export(group_id: str) -> dict:
     }
 
 
+# --- Unified all-streams student browser -----------------------------------
+# A single flat list of every student across every stream (PT + Pilates +
+# Reformer + S&C + PPN + AN + FBA + …). Supports filtering by period, stream,
+# location, paid-percentage bucket, and a free-text search. Feeds
+# /admin/students + a configurable CSV export.
+
+ALL_STUDENT_FIELDS = [
+    # (key, label)
+    ("contact_id",     "Contact ID"),
+    ("name",           "Name"),
+    ("first_name",     "First name"),
+    ("last_name",      "Last name"),
+    ("email",          "Email"),
+    ("phone",          "Phone"),
+    ("stream",         "Stream"),
+    ("qualification",  "Course / qualification"),
+    ("pathway",        "Pathway"),
+    ("location",       "Location"),
+    ("timetable",      "Timetable"),
+    ("start_date",     "Start date"),
+    ("class_period",   "Class term"),
+    ("revenue_period", "Revenue term"),
+    ("price",          "Price (€)"),
+    ("spent",          "Paid (€)"),
+    ("outstanding",    "Outstanding (€)"),
+    ("paid_pct",       "% paid"),
+    ("payment_plan",   "Payment plan"),
+    ("payment_method", "Payment method"),
+    ("payment_status", "Payment status"),
+    ("is_deferral",    "Deferral?"),
+    ("is_dropoff",     "Drop-off?"),
+    ("cert_issued",    "Cert issued?"),
+]
+
+DEFAULT_EXPORT_FIELDS = [
+    "name", "qualification", "start_date", "location", "timetable",
+]
+
+
+def all_students(*, period: str | None = None,
+                  stream: str | None = None,
+                  location: str | None = None,
+                  paid_bucket: str | None = None,   # 'above_50' | 'below_50' | 'paid' | 'unpaid'
+                  include_dropoffs: bool = True,
+                  start_dates: list[str] | None = None,  # empty/None = all
+                  q: str | None = None,
+                  limit: int = 5000) -> dict:
+    """Every student row across every stream, filtered.
+
+    Returns {rows, counts, filters}. Each row has computed convenience
+    fields: name, outstanding, paid_pct, ontraport_url.
+    """
+    sql_parts = ["1=1"]
+    args: list = []
+    if period:
+        # Match either class_period or revenue_period — most user-natural
+        sql_parts.append("(class_period = ? OR revenue_period = ?)")
+        args += [period, period]
+    if stream:
+        sql_parts.append("stream = ?")
+        args.append(stream)
+    if location:
+        sql_parts.append("COALESCE(NULLIF(location,''),'—') = ?")
+        args.append(location)
+    if not include_dropoffs:
+        sql_parts.append("is_dropoff = 0")
+    if start_dates:
+        qmarks = ",".join("?" for _ in start_dates)
+        sql_parts.append(f"COALESCE(start_date,'') IN ({qmarks})")
+        args.extend(start_dates)
+    if q:
+        like = f"%{q.strip().lower()}%"
+        sql_parts.append("""(
+            LOWER(COALESCE(first_name,'')||' '||COALESCE(last_name,'')) LIKE ?
+            OR LOWER(COALESCE(email,''))         LIKE ?
+            OR LOWER(COALESCE(qualification,'')) LIKE ?
+            OR LOWER(COALESCE(location,''))      LIKE ?
+            OR contact_id = ?
+        )""")
+        args.extend([like, like, like, like, q.strip()])
+    where_sql = " AND ".join(sql_parts)
+    with get_db() as c:
+        rs = c.execute(f"""
+            SELECT contact_id, first_name, last_name, email, phone,
+                   stream, qualification, pathway, location, timetable,
+                   start_date, class_period, revenue_period,
+                   COALESCE(price,0) AS price, COALESCE(spent,0) AS spent,
+                   payment_plan, payment_method, payment_status,
+                   COALESCE(is_deferral,0) AS is_deferral,
+                   COALESCE(is_dropoff,0)  AS is_dropoff,
+                   COALESCE(cert_issued,0) AS cert_issued
+            FROM students
+            WHERE {where_sql}
+            ORDER BY last_name, first_name, stream
+            LIMIT ?
+        """, (*args, limit)).fetchall()
+    rows = []
+    for r in rs:
+        d = dict(r)
+        name = f"{d.get('first_name') or ''} {d.get('last_name') or ''}".strip()
+        d["name"] = name or f"Contact {d['contact_id']}"
+        d["outstanding"] = max((d["price"] or 0) - (d["spent"] or 0), 0)
+        d["paid_pct"] = round((d["spent"] / d["price"] * 100) if d["price"] else 0, 1)
+        d["ontraport_url"] = f"https://app.ontraport.com/#!/contact/edit&id={d['contact_id']}"
+        rows.append(d)
+    # Apply paid-bucket filter in Python (needs computed paid_pct)
+    if paid_bucket == "above_50":
+        rows = [r for r in rows if r["paid_pct"] > 50]
+    elif paid_bucket == "below_50":
+        rows = [r for r in rows if r["paid_pct"] <= 50]
+    elif paid_bucket == "paid":
+        rows = [r for r in rows if r["paid_pct"] >= 100]
+    elif paid_bucket == "unpaid":
+        rows = [r for r in rows if r["paid_pct"] == 0]
+    counts = {
+        "total":     len(rows),
+        "above_50":  sum(1 for r in rows if r["paid_pct"] > 50),
+        "below_50":  sum(1 for r in rows if r["paid_pct"] <= 50),
+        "fully_paid":sum(1 for r in rows if r["paid_pct"] >= 100),
+        "unpaid":    sum(1 for r in rows if r["paid_pct"] == 0),
+        "deferrals": sum(1 for r in rows if r["is_deferral"]),
+        "dropoffs":  sum(1 for r in rows if r["is_dropoff"]),
+        "total_price":       sum(r["price"] for r in rows),
+        "total_paid":        sum(r["spent"] for r in rows),
+        "total_outstanding": sum(r["outstanding"] for r in rows),
+    }
+    return {
+        "rows":   rows,
+        "counts": counts,
+        "filters": {
+            "period": period, "stream": stream, "location": location,
+            "paid_bucket": paid_bucket, "q": q,
+            "include_dropoffs": include_dropoffs,
+        },
+    }
+
+
 def cert_export_groups(period: str) -> list[dict]:
     """All cohorts eligible for cert export, grouped by stream for the UI picker."""
     with get_db() as c:

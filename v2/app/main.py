@@ -8,7 +8,7 @@ Run locally:
 from __future__ import annotations
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -367,6 +367,97 @@ def admin_import_a25(request: Request):
         sep = "&" if "?" in referer else "?"
         referer = f"{referer}{sep}{urlencode({'imported': 'A25', 'n': result['students_upserted']})}"
     return RedirectResponse(url=referer, status_code=303)
+
+
+@app.get("/admin/students", response_class=HTMLResponse)
+def admin_students(request: Request,
+                    period: str | None = None,
+                    stream: str | None = None,
+                    location: str | None = None,
+                    paid_bucket: str | None = None,
+                    include_dropoffs: str = "on",
+                    start_dates: list[str] = Query(default=[]),
+                    q: str | None = None):
+    """Unified all-streams student browser. Every student across every stream
+    in one flat, filterable list — with a configurable CSV export."""
+    data = queries.all_students(
+        period=period or None, stream=stream or None, location=location or None,
+        paid_bucket=paid_bucket or None,
+        include_dropoffs=(include_dropoffs == "on"),
+        start_dates=start_dates or None,
+        q=q or None,
+    )
+    from .db import get_db as _get_db
+    with _get_db() as c:
+        streams = [r[0] for r in c.execute(
+            "SELECT DISTINCT stream FROM students WHERE stream != '' ORDER BY stream"
+        ).fetchall()]
+        locations = [r[0] for r in c.execute(
+            "SELECT DISTINCT location FROM students WHERE location != '' ORDER BY location"
+        ).fetchall()]
+        start_date_rows = c.execute("""
+            SELECT COALESCE(start_date,'') AS start_date,
+                   stream,
+                   COUNT(*) AS students
+            FROM students
+            WHERE COALESCE(start_date,'') != ''
+            GROUP BY start_date, stream
+            ORDER BY start_date DESC, stream
+        """).fetchall()
+    start_date_groups: dict[str, dict] = {}
+    for r in start_date_rows:
+        d = r["start_date"]
+        g = start_date_groups.setdefault(d, {"date": d, "streams": [], "total": 0})
+        g["streams"].append({"stream": r["stream"], "count": r["students"]})
+        g["total"] += r["students"]
+    start_date_options = sorted(start_date_groups.values(),
+                                 key=lambda x: x["date"], reverse=True)
+    return templates.TemplateResponse("students.html", {
+        "request": request,
+        "data": data,
+        "streams": streams,
+        "locations": locations,
+        "available_periods": queries.periods_with_data(),
+        "start_date_options": start_date_options,
+        "selected_start_dates": set(start_dates),
+        "all_fields": queries.ALL_STUDENT_FIELDS,
+        "default_fields": queries.DEFAULT_EXPORT_FIELDS,
+    })
+
+
+@app.post("/admin/students-export.csv")
+async def admin_students_export(request: Request):
+    """CSV export with user-picked fields + filters mirroring /admin/students."""
+    import csv, io
+    from fastapi.responses import Response
+    from datetime import date as _date
+    form = await request.form()
+    fields = [f for f in form.getlist("fields") if f in {k for k, _ in queries.ALL_STUDENT_FIELDS}]
+    if not fields:
+        fields = queries.DEFAULT_EXPORT_FIELDS
+    def _val(form, name, default=None):
+        v = form.get(name)
+        return v if (v is not None and v != "") else default
+    picked_dates = [d for d in form.getlist("start_dates") if d]
+    data = queries.all_students(
+        period=_val(form, "period"),
+        stream=_val(form, "stream"),
+        location=_val(form, "location"),
+        paid_bucket=_val(form, "paid_bucket"),
+        include_dropoffs=(form.get("include_dropoffs") == "on"),
+        start_dates=picked_dates or None,
+        q=_val(form, "q"),
+    )
+    label_by_key = dict(queries.ALL_STUDENT_FIELDS)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([label_by_key[k] for k in fields])
+    for row in data["rows"]:
+        w.writerow([row.get(k, "") for k in fields])
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    fname = f"ift-students-{_date.today().isoformat()}.csv"
+    return Response(content=csv_bytes, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/admin/deferrals", response_class=HTMLResponse)
