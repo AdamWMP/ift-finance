@@ -313,6 +313,213 @@ def record_snapshot(period: str, snapshot_date: str | None = None) -> dict:
     return {"date": d, "period": period, "sales": s["sales"], "revenue": s["collected"]}
 
 
+# --- Wayback: full daily snapshots ------------------------------------------
+# Every sync writes a full copy of the students table + the Sales Board
+# categories into snapshot tables keyed on snapshot_date. That's enough to
+# rebuild macro / by_stream / by_location / student list for any past day —
+# powers /admin/wayback which lets Adam click through history like a
+# Time Machine.
+
+def capture_daily_snapshot(snapshot_date: str | None = None) -> dict:
+    """Write today's full student + sales-board state into the snapshot
+    tables. Idempotent (INSERT OR REPLACE) so re-runs on the same day just
+    overwrite. Called from the end of the sync pipeline.
+    """
+    d = snapshot_date or date.today().isoformat()
+    with get_db() as c:
+        # Clear any prior write for this date (per-day snapshot = latest only)
+        c.execute("DELETE FROM student_snapshot   WHERE snapshot_date=?", (d,))
+        c.execute("DELETE FROM sales_board_snapshot WHERE snapshot_date=?", (d,))
+        # Students
+        n_students = c.execute("""
+            INSERT INTO student_snapshot
+              (snapshot_date, contact_id, stream, first_name, last_name,
+               email, location, start_date, qualification,
+               price, spent, class_period, revenue_period,
+               is_dropoff, is_deferral, payment_status, payment_method)
+            SELECT ?, contact_id, stream, first_name, last_name,
+                   email, location, start_date, qualification,
+                   COALESCE(price,0), COALESCE(spent,0),
+                   class_period, revenue_period,
+                   COALESCE(is_dropoff,0), COALESCE(is_deferral,0),
+                   payment_status, payment_method
+            FROM students
+        """, (d,)).rowcount
+        # Sales Board categories per period
+        n_sb = c.execute("""
+            INSERT INTO sales_board_snapshot (snapshot_date, period, category, amount)
+            SELECT ?, period, category, SUM(amount)
+              FROM transactions
+             WHERE source='sales_board' AND direction='in'
+             GROUP BY period, category
+        """, (d,)).rowcount
+    return {"date": d, "students": n_students, "sales_board_rows": n_sb}
+
+
+def wayback_dates() -> list[str]:
+    """Every distinct snapshot_date on file — most recent first."""
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT DISTINCT snapshot_date FROM student_snapshot
+             UNION
+            SELECT DISTINCT snapshot_date FROM sales_board_snapshot
+             ORDER BY 1 DESC
+        """).fetchall()
+    return [r[0] for r in rs]
+
+
+def _sb_snapshot_by_category(snapshot_date: str, period: str,
+                              *, exclude_overlapping: bool = True) -> dict[str, float]:
+    """Point-in-time analogue of _sales_board_by_category. Overlap detection
+    uses student_snapshot for the same date so historical numbers reflect
+    what the live dashboard would have shown that day."""
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT category, COALESCE(amount, 0) AS amt
+            FROM sales_board_snapshot
+            WHERE snapshot_date=? AND period=?
+        """, (snapshot_date, period)).fetchall()
+        live_streams = {r["stream"] for r in c.execute("""
+            SELECT DISTINCT stream FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0 AND COALESCE(spent,0) > 0
+        """, (snapshot_date, period)).fetchall()}
+    out = {r["category"]: r["amt"] for r in rs}
+    if exclude_overlapping:
+        skip = set(ALWAYS_OVERLAPPING_SB)
+        for cat, stream in SB_CATEGORY_TO_STREAM.items():
+            if stream in live_streams:
+                skip.add(cat)
+        out = {k: v for k, v in out.items() if k not in skip}
+    return out
+
+
+def macro_at(snapshot_date: str, period: str) -> dict:
+    """Same shape as macro() but reads from student_snapshot on the given date."""
+    with get_db() as c:
+        r = c.execute("""
+            SELECT
+                COUNT(DISTINCT contact_id) AS students,
+                COALESCE(SUM(price),0)     AS expected,
+                COALESCE(SUM(spent),0)     AS collected
+            FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+        """, (snapshot_date, period)).fetchone()
+    sb_extra = sum(_sb_snapshot_by_category(snapshot_date, period).values())
+    expected  = (r["expected"] or 0) + sb_extra
+    collected = (r["collected"] or 0) + sb_extra
+    return {
+        "students":    r["students"] or 0,
+        "expected":    expected,
+        "collected":   collected,
+        "outstanding": expected - collected,
+        "rate_pct":    (collected / expected * 100) if expected else 0.0,
+    }
+
+
+def by_stream_at(snapshot_date: str, period: str) -> list[dict]:
+    """Per-stream aggregation as of a given date."""
+    out: dict[str, dict] = {}
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT stream, COUNT(*) AS students,
+                   COALESCE(SUM(price),0) AS expected,
+                   COALESCE(SUM(spent),0) AS collected
+            FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            GROUP BY stream
+        """, (snapshot_date, period)).fetchall()
+    for r in rs:
+        out[r["stream"]] = {
+            "stream": r["stream"], "students": r["students"],
+            "expected": r["expected"] or 0, "collected": r["collected"] or 0,
+        }
+    for cat, amt in _sb_snapshot_by_category(snapshot_date, period).items():
+        label = CATEGORY_STREAM.get(cat, cat.title())
+        d = out.setdefault(label, {"stream": label, "students": 0, "expected": 0, "collected": 0})
+        d["expected"] += amt
+        d["collected"] += amt
+    return sorted(out.values(), key=lambda x: -x["expected"])
+
+
+def by_location_at(snapshot_date: str, period: str) -> list[dict]:
+    """Per-location aggregation as of a given date."""
+    with get_db() as c:
+        rs = c.execute("""
+            SELECT COALESCE(NULLIF(location,''),'—') AS location,
+                   COUNT(DISTINCT contact_id) AS students,
+                   COALESCE(SUM(price),0)     AS expected,
+                   COALESCE(SUM(spent),0)     AS collected
+            FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            GROUP BY location
+            ORDER BY expected DESC
+        """, (snapshot_date, period)).fetchall()
+    return [dict(r) for r in rs]
+
+
+def students_at(snapshot_date: str, period: str | None = None) -> list[dict]:
+    """All students as they existed on snapshot_date, optionally scoped
+    to a period (matches either class_period or revenue_period)."""
+    sql = "SELECT * FROM student_snapshot WHERE snapshot_date=?"
+    args = [snapshot_date]
+    if period:
+        sql += " AND (class_period=? OR revenue_period=?)"
+        args += [period, period]
+    sql += " ORDER BY last_name, first_name, stream"
+    with get_db() as c:
+        rs = c.execute(sql, args).fetchall()
+    out = []
+    for r in rs:
+        d = dict(r)
+        d["name"] = f"{d.get('first_name') or ''} {d.get('last_name') or ''}".strip() \
+                    or f"Contact {d['contact_id']}"
+        d["outstanding"] = max((d["price"] or 0) - (d["spent"] or 0), 0)
+        d["paid_pct"] = round((d["spent"] / d["price"] * 100) if d["price"] else 0, 1)
+        d["ontraport_url"] = f"https://app.ontraport.com/#!/contact/edit&id={d['contact_id']}"
+        out.append(d)
+    return out
+
+
+def wayback_diff(from_date: str, to_date: str, period: str) -> dict:
+    """What changed between two snapshot dates for a given period.
+
+    Returns arrays of contacts that were added / removed / had their spent
+    change / had their revenue_period change. Powers the diff panel on the
+    wayback UI.
+    """
+    with get_db() as c:
+        old = {(r["contact_id"], r["stream"]): dict(r) for r in c.execute("""
+            SELECT * FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+        """, (from_date, period)).fetchall()}
+        new = {(r["contact_id"], r["stream"]): dict(r) for r in c.execute("""
+            SELECT * FROM student_snapshot
+            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+        """, (to_date, period)).fetchall()}
+    added, removed, changed = [], [], []
+    for key, r in new.items():
+        if key not in old:
+            added.append(r)
+        else:
+            o = old[key]
+            deltas = {}
+            for f in ("spent", "price", "revenue_period", "class_period",
+                      "start_date", "is_deferral", "payment_status"):
+                if (o.get(f) or "") != (r.get(f) or ""):
+                    deltas[f] = {"from": o.get(f), "to": r.get(f)}
+            if deltas:
+                changed.append({**r, "deltas": deltas})
+    for key, r in old.items():
+        if key not in new:
+            removed.append(r)
+    return {
+        "from_date": from_date, "to_date": to_date, "period": period,
+        "added":   sorted(added,   key=lambda x: -(x.get("spent")   or 0)),
+        "removed": sorted(removed, key=lambda x: -(x.get("spent")   or 0)),
+        "changed": sorted(changed, key=lambda x: -abs((x.get("spent") or 0) - (x.get("deltas",{}).get("spent",{}).get("from") or 0))),
+    }
+
+
 def trend(period: str, days: int = 90) -> list[dict]:
     """Snapshot series for the last `days` days, ascending by date."""
     cutoff = (date.today() - timedelta(days=days)).isoformat()

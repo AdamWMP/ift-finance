@@ -54,6 +54,41 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Point-in-time snapshots — every daily sync writes one row per
+-- (date, contact_id, stream) so the /admin/wayback view can render the
+-- dashboard as it looked on any past day. Sales-board snapshot mirrors the
+-- same idea for the SB categories that flow into macro.collected.
+CREATE TABLE IF NOT EXISTS student_snapshot (
+    snapshot_date TEXT NOT NULL,          -- YYYY-MM-DD
+    contact_id TEXT NOT NULL,
+    stream TEXT NOT NULL,
+    first_name TEXT, last_name TEXT,
+    email TEXT,
+    location TEXT,
+    start_date TEXT,
+    qualification TEXT,
+    price REAL DEFAULT 0,
+    spent REAL DEFAULT 0,
+    class_period TEXT,
+    revenue_period TEXT,
+    is_dropoff INTEGER DEFAULT 0,
+    is_deferral INTEGER DEFAULT 0,
+    payment_status TEXT,
+    payment_method TEXT,
+    PRIMARY KEY (snapshot_date, contact_id, stream)
+);
+CREATE INDEX IF NOT EXISTS ix_ss_date   ON student_snapshot(snapshot_date);
+CREATE INDEX IF NOT EXISTS ix_ss_period ON student_snapshot(snapshot_date, revenue_period);
+
+CREATE TABLE IF NOT EXISTS sales_board_snapshot (
+    snapshot_date TEXT NOT NULL,
+    period TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount REAL,
+    PRIMARY KEY (snapshot_date, period, category)
+);
+CREATE INDEX IF NOT EXISTS ix_sbs_date ON sales_board_snapshot(snapshot_date);
+
 CREATE TABLE IF NOT EXISTS ad_spend (
     id INTEGER PRIMARY KEY,
     date TEXT NOT NULL,                   -- ISO yyyy-mm-dd (day of spend)

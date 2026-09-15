@@ -625,6 +625,47 @@ def admin_deferrals_json(migration_period: str = "A26",
     }
 
 
+@app.get("/admin/wayback", response_class=HTMLResponse)
+def admin_wayback(request: Request,
+                   date: str | None = None,
+                   period: str = "S26",
+                   compare_to: str | None = None):
+    """'Wayback machine' for the finance dashboard — pick any past day and
+    see macro / by_stream / by_location / students as they were on that
+    snapshot. Optionally compare two dates to see who was added / removed /
+    changed."""
+    dates = queries.wayback_dates()
+    if not date and dates:
+        date = dates[0]
+    if not date:
+        return templates.TemplateResponse("wayback.html", {
+            "request": request, "dates": [], "period": period,
+            "selected_date": None, "compare_to": None,
+            "macro": None, "by_stream": [], "by_location": [],
+            "students": [], "diff": None,
+        })
+    macro = queries.macro_at(date, period)
+    by_stream = queries.by_stream_at(date, period)
+    by_location = queries.by_location_at(date, period)
+    students = queries.students_at(date, period)
+    diff = None
+    if compare_to and compare_to in dates and compare_to != date:
+        diff = queries.wayback_diff(compare_to, date, period)
+    return templates.TemplateResponse("wayback.html", {
+        "request": request,
+        "dates": dates,
+        "selected_date": date,
+        "compare_to": compare_to,
+        "period": period,
+        "available_periods": queries.periods_with_data(),
+        "macro": macro,
+        "by_stream": by_stream,
+        "by_location": by_location,
+        "students": students,
+        "diff": diff,
+    })
+
+
 @app.get("/admin/audit", response_class=HTMLResponse)
 def admin_audit(request: Request, period: str = "S26"):
     return templates.TemplateResponse("audit.html", {

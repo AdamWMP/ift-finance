@@ -46,6 +46,9 @@ def main(period: str = "S26") -> int:
     _step("backfill deferral revenue_period from invoices",
           queries.backfill_deferral_periods)
     _step("record daily snapshot", queries.record_snapshot, period)
+    # Full-fidelity wayback snapshot — per-student + per-SB-category so we
+    # can rebuild the dashboard for any past day.
+    _step("capture wayback snapshot (students + SB)", queries.capture_daily_snapshot)
 
     from .db import set_meta
     set_meta("last_sync_at", datetime.now().isoformat(timespec="seconds"))

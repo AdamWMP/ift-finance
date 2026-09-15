@@ -1,0 +1,213 @@
+{% extends "_base.html" %}
+{% block title %}Wayback · {{ selected_date or '—' }}{% endblock %}
+
+{% block term_switcher %}
+<label class="term-select-label">
+  Term
+  <select class="term-select" onchange="chgParam('period', this.value)">
+    {% for p in (available_periods or [period]) %}
+      <option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>
+    {% endfor %}
+  </select>
+</label>
+{% endblock %}
+
+{% block main %}
+
+<section class="block">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+    <div>
+      <h2 style="margin:0 0 4px">🕰 Wayback machine · {{ period }}</h2>
+      <p class="muted small" style="margin:0">
+        Every finance sync writes a full snapshot of the dashboard. Pick a date to see the numbers exactly as they were on that day.
+      </p>
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <label class="term-select-label">
+        Date
+        <select class="term-select" onchange="chgParam('date', this.value)">
+          {% for d in dates %}
+            <option value="{{ d }}" {% if d==selected_date %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="term-select-label">
+        Compare to
+        <select class="term-select" onchange="chgParam('compare_to', this.value)">
+          <option value="">— none —</option>
+          {% for d in dates %}
+            {% if d != selected_date %}
+              <option value="{{ d }}" {% if d==compare_to %}selected{% endif %}>{{ d }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+  </div>
+</section>
+
+{% if not selected_date %}
+<section class="block">
+  <p class="muted">No snapshots on file yet. Once the daily sync runs at least once, dates will appear here.</p>
+</section>
+{% else %}
+
+<section class="block">
+  <h3 style="margin:0 0 12px">As of {{ selected_date }}</h3>
+  <div class="hero" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="card"><div class="label">Students</div><div class="num">{{ macro.students }}</div></div>
+    <div class="card"><div class="label">Expected</div><div class="num">€{{ '{:,.0f}'.format(macro.expected) }}</div></div>
+    <div class="card"><div class="label">Collected</div><div class="num">€{{ '{:,.0f}'.format(macro.collected) }}</div></div>
+    <div class="card"><div class="label">Outstanding</div><div class="num">€{{ '{:,.0f}'.format(macro.outstanding) }}</div></div>
+    <div class="card accent"><div class="label">Collection rate</div><div class="num">{{ '%0.1f'|format(macro.rate_pct) }}%</div></div>
+  </div>
+</section>
+
+<section class="block">
+  <h3 style="margin:0 0 12px">By stream</h3>
+  <table class="students">
+    <thead>
+      <tr><th>Stream</th><th class="num">Students</th><th class="num">Expected</th><th class="num">Collected</th><th class="num">Outstanding</th></tr>
+    </thead>
+    <tbody>
+      {% for r in by_stream %}
+      <tr>
+        <td>{{ r.stream }}</td>
+        <td class="num">{{ r.students }}</td>
+        <td class="num">€{{ '%0.0f'|format(r.expected) }}</td>
+        <td class="num">€{{ '%0.0f'|format(r.collected) }}</td>
+        <td class="num">€{{ '%0.0f'|format((r.expected or 0) - (r.collected or 0)) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block">
+  <h3 style="margin:0 0 12px">By location</h3>
+  <table class="students">
+    <thead>
+      <tr><th>Location</th><th class="num">Students</th><th class="num">Expected</th><th class="num">Collected</th></tr>
+    </thead>
+    <tbody>
+      {% for r in by_location %}
+      <tr>
+        <td>{{ r.location }}</td>
+        <td class="num">{{ r.students }}</td>
+        <td class="num">€{{ '%0.0f'|format(r.expected) }}</td>
+        <td class="num">€{{ '%0.0f'|format(r.collected) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if diff %}
+<section class="block">
+  <h3 style="margin:0 0 12px">Δ vs {{ diff.from_date }}</h3>
+  <p class="muted small" style="margin:0 0 12px">
+    What changed between {{ diff.from_date }} → {{ diff.to_date }} for {{ diff.period }}.
+    <strong>{{ diff.added|length }}</strong> added ·
+    <strong>{{ diff.removed|length }}</strong> removed ·
+    <strong>{{ diff.changed|length }}</strong> changed.
+  </p>
+
+  {% if diff.added %}
+  <details open><summary><strong>Added ({{ diff.added|length }})</strong></summary>
+    <table class="students">
+      <thead><tr><th>Name</th><th>Stream</th><th>Location</th><th class="num">Price</th><th class="num">Spent</th></tr></thead>
+      <tbody>
+        {% for r in diff.added %}
+        <tr>
+          <td><a href="https://app.ontraport.com/#!/contact/edit&id={{ r.contact_id }}" target="_blank">{{ r.first_name }} {{ r.last_name }}</a></td>
+          <td>{{ r.stream }}</td>
+          <td>{{ r.location or '—' }}</td>
+          <td class="num">€{{ '%0.0f'|format(r.price or 0) }}</td>
+          <td class="num">€{{ '%0.0f'|format(r.spent or 0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+
+  {% if diff.removed %}
+  <details><summary><strong>Removed ({{ diff.removed|length }})</strong></summary>
+    <table class="students">
+      <thead><tr><th>Name</th><th>Stream</th><th class="num">Price</th><th class="num">Spent</th></tr></thead>
+      <tbody>
+        {% for r in diff.removed %}
+        <tr>
+          <td><a href="https://app.ontraport.com/#!/contact/edit&id={{ r.contact_id }}" target="_blank">{{ r.first_name }} {{ r.last_name }}</a></td>
+          <td>{{ r.stream }}</td>
+          <td class="num">€{{ '%0.0f'|format(r.price or 0) }}</td>
+          <td class="num">€{{ '%0.0f'|format(r.spent or 0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+
+  {% if diff.changed %}
+  <details><summary><strong>Changed ({{ diff.changed|length }})</strong></summary>
+    <table class="students">
+      <thead><tr><th>Name</th><th>Stream</th><th>Field</th><th>From</th><th>To</th></tr></thead>
+      <tbody>
+        {% for r in diff.changed %}
+          {% for field, delta in r.deltas.items() %}
+          <tr>
+            <td><a href="https://app.ontraport.com/#!/contact/edit&id={{ r.contact_id }}" target="_blank">{{ r.first_name }} {{ r.last_name }}</a></td>
+            <td>{{ r.stream }}</td>
+            <td>{{ field }}</td>
+            <td class="muted small">{{ delta['from'] }}</td>
+            <td class="small"><strong>{{ delta['to'] }}</strong></td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="block">
+  <h3 style="margin:0 0 12px">Students as of {{ selected_date }} ({{ students|length }})</h3>
+  <div style="max-height:600px;overflow:auto">
+  <table class="students">
+    <thead>
+      <tr>
+        <th>Name</th><th>Stream</th><th>Location</th><th>Start</th>
+        <th class="num">Price</th><th class="num">Spent</th><th class="num">Paid %</th><th>Rev period</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in students %}
+      <tr>
+        <td><a href="{{ s.ontraport_url }}" target="_blank">{{ s.name }}</a></td>
+        <td>{{ s.stream }}</td>
+        <td>{{ s.location or '—' }}</td>
+        <td class="small">{{ s.start_date or '' }}</td>
+        <td class="num">€{{ '%0.0f'|format(s.price or 0) }}</td>
+        <td class="num">€{{ '%0.0f'|format(s.spent or 0) }}</td>
+        <td class="num">{{ s.paid_pct }}%</td>
+        <td class="small">{{ s.revenue_period or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+{% endif %}
+
+<script>
+function chgParam(key, val) {
+  const u = new URL(window.location);
+  if (val) u.searchParams.set(key, val);
+  else     u.searchParams.delete(key);
+  window.location = u.toString();
+}
+</script>
+{% endblock %}
