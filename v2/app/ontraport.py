@@ -288,7 +288,14 @@ def discover_s26_contact_ids() -> list[str]:
 
 def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
     """Fetch full contact records and decode dropdowns/dates/prices.
-    Returns rows shaped like the .op_live_s26.csv columns expected by ingest."""
+    Returns rows shaped like the .op_live_s26.csv columns expected by ingest.
+
+    Rate-limit resilient: 300ms delay between batches, exponential backoff
+    on 429. Without this, a large discovery (800+ contacts × 50/batch = 16+
+    back-to-back API calls) trips ONtraport's rate limiter and callers
+    that fall back to the stale CSV get an incomplete picture.
+    """
+    import time as _time
     if not contact_ids: return []
     fields_meta = fetch_contact_meta()
     out = []
@@ -296,11 +303,22 @@ def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
     for chunk_start in range(0, len(contact_ids), 50):
         chunk = contact_ids[chunk_start:chunk_start+50]
         ids_param = ",".join(chunk)
-        r = requests.get(f"{OP_BASE}/objects",
-                         params={"objectID": 0, "ids": ids_param},
-                         headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        rows = r.json().get("data", []) or []
+        # Retry with exponential backoff on 429 / transient failure
+        rows = []
+        for attempt in range(5):
+            r = requests.get(f"{OP_BASE}/objects",
+                             params={"objectID": 0, "ids": ids_param},
+                             headers=HEADERS, timeout=30)
+            if r.status_code == 429:
+                wait = 2 ** attempt
+                print(f"  rate-limited on batch {chunk_start}-{chunk_start+50}; sleeping {wait}s (attempt {attempt+1}/5)", flush=True)
+                _time.sleep(wait)
+                continue
+            r.raise_for_status()
+            rows = r.json().get("data", []) or []
+            break
+        # Pace future batches to stay under the limiter
+        _time.sleep(0.3)
         for c in rows:
             row = {
                 "Contact ID":  str(c.get("id", "")),
