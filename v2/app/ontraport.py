@@ -159,12 +159,20 @@ FIELD_MAP = {
     "f2288": "PT Course Year",
     "f2302": "Pilates Course Qualifications", "f2303": "Pilates Course Location",
     "f2304": "Pilates Course Timetable",      "f2305": "Pilates Course Start Date",
-    "f2306": "Pilates Course Price",          "f2335": "Pilates Course Spent",
+    # Pilates Course Spent: switched from f2335 (raw rollup) to f2725
+    # (Matwork Pilates Course Fees Spent — sum of Paid purchases where product
+    # starts with "Pilates Course"). Clean "starts with" filter matches
+    # "Pilates Course" + "Pilates Course Grant Funding" but not "Reformer
+    # Pilates Course", so Reformer money can't leak in via the July-24 split.
+    "f2306": "Pilates Course Price",          "f2725": "Pilates Course Spent",
     "f2309": "Pilates Course Payment Plan",   "f2538": "Pilates Payment Method",
     "f2300": "Pilates Course Year",
     "f2592": "Reformer Course Qualification", "f2593": "Reformer Course Location",
     "f2594": "Reformer Course Timetable",     "f2595": "Reformer Course Start Date",
-    "f2596": "Reformer Course Price",         "f2599": "Reformer Pilates Course Spent",
+    # Reformer Pilates Course Spent: switched from f2599 (raw rollup) to f2726
+    # (sum of Paid purchases where product name starts with "Reformer Pilates
+    # Course"). Same rationale — filtered rollup, no Matwork/Reformer leak.
+    "f2596": "Reformer Course Price",         "f2726": "Reformer Pilates Course Spent",
     "f2598": "Reformer Pilates Payment Plan",
     "f2590": "Reformer Course Year",
     # Follow-on streams — discovered via the "course marker" drop fields; revenue_period
@@ -183,10 +191,17 @@ FIELD_MAP = {
 }
 
 # Year option IDs that map to "2026" — different per course (!)
+# 2026-09-15: Pilates and Reformer year dropdowns were rebuilt in ONtraport
+# (option IDs reassigned). Discovery for those two streams was returning
+# zero rows against the old IDs — hence attendance rosters missing entire
+# Pilates + Reformer cohorts. Verified against /objects/meta:
+#   f2288 (PT):       586 = 2026  (unchanged)
+#   f2300 (Pilates):  754 = 2026  (was 587)
+#   f2590 (Reformer): 760 = 2026  (was 616)
 YEAR_2026 = {
     "f2288": "586",  # PT
-    "f2300": "587",  # Pilates
-    "f2590": "616",  # Reformer
+    "f2300": "754",  # Pilates
+    "f2590": "760",  # Reformer
 }
 
 # NOTE: Follow-on stream discovery (S&C / PPN / AN / FBA) intentionally
@@ -237,7 +252,15 @@ def _discover_by_condition(cond_obj: dict, label: str, ids: set[str]) -> None:
 
 
 def discover_s26_contact_ids() -> list[str]:
-    """Find every contact whose PT, Pilates, OR Reformer course year = 2026.
+    """Find every contact enrolled in a PT / Pilates / Reformer course.
+
+    Primary discovery: PT Year = 2026 (f2288=586 — still populated).
+    Fallback discovery: any contact with a Pilates OR Reformer Start Date
+    set. The Pilates + Reformer Year drops (f2300, f2590) were rebuilt in
+    ONtraport and are no longer populated by the sales automation, so
+    Year-based lookup returns zero rows for those two streams. Start-date
+    lookup catches every enrollee; period assignment downstream
+    (period_for) tags them into the correct term (S26 / A25 / A26 / …).
 
     Reformer-only contacts are fetched + decoded but never written as student
     rows (Reformer revenue lives on the Sales Board, not in raw_students).
@@ -246,11 +269,21 @@ def discover_s26_contact_ids() -> list[str]:
     cells only, which avoids both double-counting and old-term contact leak.
     """
     ids: set[str] = set()
-    for field_id, value in YEAR_2026.items():
-        _discover_by_condition(
-            {"field": {"field": field_id}, "op": "=", "value": {"value": value}},
-            f"{field_id}={value}", ids,
-        )
+    # PT — still identified via Year dropdown
+    _discover_by_condition(
+        {"field": {"field": "f2288"}, "op": "=", "value": {"value": "586"}},
+        "f2288=586 (PT 2026)", ids,
+    )
+    # Pilates — fallback to Start Date populated
+    _discover_by_condition(
+        {"field": {"field": "f2305"}, "op": ">", "value": {"value": "0"}},
+        "f2305>0 (Pilates start date set)", ids,
+    )
+    # Reformer — fallback to Start Date populated
+    _discover_by_condition(
+        {"field": {"field": "f2595"}, "op": ">", "value": {"value": "0"}},
+        "f2595>0 (Reformer start date set)", ids,
+    )
     return sorted(ids)
 
 def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
@@ -350,8 +383,8 @@ def fetch_contact_diagnostics(contact_ids: list[str]) -> list[dict]:
     """For each contact, pull back the modification timestamp and every rollup
     that could explain a 'money moved' story:
       • dlm — date modified (unix)
-      • f2335 — Pilates Course Spent (rollup)
-      • f2599 — Reformer Pilates Course Spent (rollup)
+      • f2725 — Matwork Pilates Course Fees Spent (filtered rollup)
+      • f2726 — Reformer Pilates Course Fees Spent (filtered rollup)
       • f2334 — PT Course Spent (rollup)
       • f2305 — Pilates Course Start Date
       • f2595 — Reformer Course Start Date
@@ -361,7 +394,7 @@ def fetch_contact_diagnostics(contact_ids: list[str]) -> list[dict]:
     from datetime import datetime as _dt, timezone as _tz
     if not contact_ids:
         return []
-    fields = "id,firstname,lastname,dlm,f2335,f2599,f2334,f2305,f2595,f2293"
+    fields = "id,firstname,lastname,dlm,f2725,f2726,f2334,f2305,f2595,f2293"
     out = []
     for i in range(0, len(contact_ids), 50):
         chunk = contact_ids[i:i+50]
@@ -384,8 +417,8 @@ def fetch_contact_diagnostics(contact_ids: list[str]) -> list[dict]:
                 "name":         f"{c.get('firstname') or ''} {c.get('lastname') or ''}".strip(),
                 "dlm":          dlm_iso,
                 "dlm_raw":      dlm_raw,
-                "pilates_spent": _to_float(c.get("f2335")),
-                "reformer_spent":_to_float(c.get("f2599")),
+                "pilates_spent": _to_float(c.get("f2725")),
+                "reformer_spent":_to_float(c.get("f2726")),
                 "pt_spent":      _to_float(c.get("f2334")),
                 "pilates_start_raw": c.get("f2305") or "",
                 "reformer_start_raw":c.get("f2595") or "",
