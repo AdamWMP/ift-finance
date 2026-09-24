@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>IFT Finance Report · {{ period }} · {{ generated_at }}</title>
+<style>
+:root{
+  --ink:#0f1419; --ink2:#374151; --muted:#6b7280; --line:#e5e7eb;
+  --paper:#ffffff; --panel:#f8fafc; --panel2:#f1f5f9;
+  --gold:#B8922E; --gold2:#D4B04A; --gold-tint:rgba(184,146,46,0.08);
+  --good:#059669; --good-tint:rgba(5,150,105,0.09);
+  --warn:#d97706; --warn-tint:rgba(217,119,6,0.10);
+  --bad:#dc2626;  --bad-tint:rgba(220,38,38,0.10);
+  --ink-strong:#0b1220;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#eef1f4;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.45}
+.doc{max-width:1080px;margin:24px auto;background:var(--paper);box-shadow:0 4px 40px rgba(15,20,25,.08);border-radius:14px;overflow:hidden}
+.toolbar{position:sticky;top:0;z-index:5;background:var(--ink-strong);color:#fff;padding:10px 22px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.toolbar b{color:var(--gold2);letter-spacing:.4px}
+.toolbar .actions{display:flex;gap:8px;align-items:center}
+.toolbar select,.toolbar a,.toolbar button{
+  background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;padding:6px 12px;font-size:12px;font-family:inherit;cursor:pointer;text-decoration:none
+}
+.toolbar button.primary{background:var(--gold);border-color:var(--gold)}
+.toolbar button.primary:hover{background:var(--gold2)}
+@media print { .toolbar{display:none} .doc{box-shadow:none;margin:0;border-radius:0;max-width:none} body{background:#fff} }
+
+/* Cover */
+.cover{padding:36px 44px 22px;border-bottom:1px solid var(--line);position:relative}
+.cover::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:3px;background:linear-gradient(90deg,var(--gold) 0%,var(--gold2) 100%)}
+.brand{font-size:11px;font-weight:700;letter-spacing:2.5px;color:var(--gold);text-transform:uppercase}
+.cover h1{margin:8px 0 4px;font-size:32px;letter-spacing:-.02em;color:var(--ink-strong)}
+.cover .sub{color:var(--muted);font-size:13px}
+.cover .meta{margin-top:18px;display:flex;gap:24px;flex-wrap:wrap;color:var(--ink2);font-size:12px}
+.cover .meta span{display:inline-flex;gap:6px;align-items:center}
+.cover .meta strong{color:var(--ink-strong)}
+
+/* Sections */
+section{padding:26px 44px;border-bottom:1px solid var(--line)}
+section:last-child{border-bottom:0}
+h2{font-size:16px;letter-spacing:.02em;color:var(--ink-strong);margin:0 0 4px;text-transform:uppercase;font-weight:700}
+h2 small{color:var(--muted);font-weight:500;font-size:11px;letter-spacing:0;text-transform:none;margin-left:6px}
+.section-lead{color:var(--muted);font-size:12px;margin:0 0 18px}
+
+/* Headline cards */
+.hero{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:6px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 16px 14px;position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--gold)}
+.card.good::before{background:var(--good)} .card.warn::before{background:var(--warn)} .card.bad::before{background:var(--bad)}
+.card .label{font-size:10.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+.card .num{font-size:26px;font-weight:800;color:var(--ink-strong);margin-top:6px;font-variant-numeric:tabular-nums}
+.card .num small{font-size:11px;font-weight:500;color:var(--muted);margin-left:4px}
+.card .sub{font-size:11px;color:var(--muted);margin-top:2px}
+
+/* Progress bars */
+.progress{height:7px;background:var(--panel2);border-radius:99px;overflow:hidden;margin-top:6px}
+.progress span{display:block;height:100%;background:linear-gradient(90deg,var(--good) 0%,#10b981 100%);border-radius:99px}
+.progress.warn span{background:linear-gradient(90deg,var(--warn) 0%,#f59e0b 100%)}
+.progress.bad  span{background:linear-gradient(90deg,var(--bad) 0%,#ef4444 100%)}
+.progress.gold span{background:linear-gradient(90deg,var(--gold) 0%,var(--gold2) 100%)}
+
+/* Bars for by-stream / by-location */
+.bars{width:100%;border-collapse:collapse;margin-top:6px}
+.bars td{padding:9px 8px;vertical-align:middle;border-bottom:1px dashed var(--line);font-size:12.5px}
+.bars td:first-child{padding-left:0;width:34%;font-weight:600;color:var(--ink-strong)}
+.bars td.bar{width:38%}
+.bars td.bar .track{height:9px;background:var(--panel2);border-radius:99px;overflow:hidden;position:relative}
+.bars td.bar .fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--gold) 0%,var(--gold2) 100%);border-radius:99px}
+.bars td.num{font-variant-numeric:tabular-nums;text-align:right;color:var(--ink2);white-space:nowrap;width:14%}
+.bars td.pct{font-variant-numeric:tabular-nums;text-align:right;color:var(--gold);font-weight:700;width:14%}
+
+/* Grid tables */
+table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th,.tbl td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl th{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:700;background:var(--panel);border-top:1px solid var(--line)}
+.tbl tr:hover td{background:var(--panel)}
+.tbl td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.tbl td.pct{font-variant-numeric:tabular-nums;text-align:right;font-weight:700}
+
+.chip{display:inline-block;padding:2px 8px;font-size:10.5px;font-weight:700;letter-spacing:.4px;border-radius:99px;background:var(--gold-tint);color:var(--gold);text-transform:uppercase;white-space:nowrap}
+.chip.good{background:var(--good-tint);color:var(--good)}
+.chip.warn{background:var(--warn-tint);color:var(--warn)}
+.chip.bad {background:var(--bad-tint);color:var(--bad)}
+
+.insight{background:var(--panel);border-left:3px solid var(--gold);border-radius:8px;padding:12px 16px;margin-top:12px}
+.insight strong{color:var(--ink-strong)}
+.insight-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:6px}
+
+.footer{padding:24px 44px 30px;text-align:center;color:var(--muted);font-size:11px;background:var(--panel)}
+
+@media (max-width:820px){
+  .hero{grid-template-columns:repeat(2,1fr)}
+  section{padding:22px 22px}
+  .cover{padding:28px 22px 18px}
+  .cover h1{font-size:24px}
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div><b>IFT FINANCE REPORT</b> · {{ period }} · {{ generated_at }}</div>
+  <div class="actions">
+    <select onchange="location.href='/admin/finance-report?period='+this.value">
+      {% for p in available_periods %}
+        <option value="{{ p }}" {% if p==period %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+    <button class="primary" onclick="window.print()">⤓ Print / Save as PDF</button>
+    <a href="/board?period={{ period }}">← Board</a>
+  </div>
+</div>
+
+<div class="doc">
+
+<div class="cover">
+  <div class="brand">Image Fitness Training</div>
+  <h1>Finance Report · {{ period }}</h1>
+  <div class="sub">Live snapshot of the S26 revenue picture. Every figure below matches the /board macro at generation time.</div>
+  <div class="meta">
+    <span>📅 <strong>{{ generated_at }}</strong></span>
+    <span>👥 <strong>{{ macro.students }}</strong> active students</span>
+    <span>💷 <strong>€{{ '{:,.0f}'.format(macro.collected) }}</strong> collected of <strong>€{{ '{:,.0f}'.format(macro.expected) }}</strong></span>
+  </div>
+</div>
+
+<section>
+  <h2>Headline</h2>
+  <p class="section-lead">Everything on one line: how much is owed to us, how much has landed, and the gap.</p>
+  <div class="hero">
+    <div class="card gold">
+      <div class="label">Students</div>
+      <div class="num">{{ macro.students }}</div>
+      <div class="sub">active, drop-offs excluded</div>
+    </div>
+    <div class="card">
+      <div class="label">Expected</div>
+      <div class="num">€{{ '{:,.0f}'.format(macro.expected) }}</div>
+      <div class="sub">total course fees due</div>
+    </div>
+    <div class="card good">
+      <div class="label">Collected</div>
+      <div class="num">€{{ '{:,.0f}'.format(macro.collected) }}</div>
+      <div class="progress"><span style="width:{{ '{:.1f}'.format(macro.rate_pct) }}%"></span></div>
+    </div>
+    <div class="card {% if macro.rate_pct >= 80 %}good{% elif macro.rate_pct >= 50 %}warn{% else %}bad{% endif %}">
+      <div class="label">Collection Rate</div>
+      <div class="num">{{ '{:.1f}'.format(macro.rate_pct) }}<small>%</small></div>
+      <div class="sub">€{{ '{:,.0f}'.format(macro.outstanding) }} outstanding</div>
+    </div>
+  </div>
+</section>
+
+{% if streams %}
+<section>
+  <h2>By stream <small>{{ streams|length }} streams</small></h2>
+  <p class="section-lead">Where the money is coming from. PT + Pilates from student rows; other streams from the Sales Board.</p>
+  {% set max_exp = streams|map(attribute='expected')|max %}
+  <table class="bars">
+    {% for r in streams %}
+    <tr>
+      <td>{{ r.stream }} <span style="color:var(--muted);font-weight:400">· {{ r.students }} students</span></td>
+      <td class="bar"><div class="track"><div class="fill" style="width:{{ (r.expected / max_exp * 100) if max_exp else 0 }}%"></div></div></td>
+      <td class="num">€{{ '{:,.0f}'.format(r.collected) }} / €{{ '{:,.0f}'.format(r.expected) }}</td>
+      <td class="pct">{{ '{:.0f}'.format((r.collected / r.expected * 100) if r.expected else 0) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+{% if locations %}
+<section>
+  <h2>By location <small>{{ locations|length }} locations</small></h2>
+  <p class="section-lead">Geographic breakdown of expected vs collected.</p>
+  {% set max_loc = locations|map(attribute='expected')|max %}
+  <table class="bars">
+    {% for r in locations %}
+    <tr>
+      <td>{{ r.location }} <span style="color:var(--muted);font-weight:400">· {{ r.students }} students</span></td>
+      <td class="bar"><div class="track"><div class="fill" style="width:{{ (r.expected / max_loc * 100) if max_loc else 0 }}%"></div></div></td>
+      <td class="num">€{{ '{:,.0f}'.format(r.collected) }} / €{{ '{:,.0f}'.format(r.expected) }}</td>
+      <td class="pct">{{ '{:.0f}'.format((r.collected / r.expected * 100) if r.expected else 0) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+{% if groups %}
+<section>
+  <h2>Class groups <small>{{ groups|length }} cohorts</small></h2>
+  <p class="section-lead">Every cohort scheduled to run in {{ period }}, with progress toward full payment.</p>
+  <table class="tbl">
+    <thead><tr>
+      <th>Cohort</th><th style="text-align:right">Students</th><th style="text-align:right">Expected</th>
+      <th style="text-align:right">Collected</th><th style="text-align:right">%</th><th>Progress</th>
+    </tr></thead>
+    <tbody>
+    {% for g in groups %}
+      {% set pct = ((g.collected or 0) / g.expected * 100) if g.expected else 0 %}
+      <tr>
+        <td>
+          <strong>{{ g.label }}</strong>
+          {% if g.deferred_in %}<span class="chip warn" style="margin-left:6px">+{{ g.deferred_in }} deferred in</span>{% endif %}
+        </td>
+        <td class="num">{{ g.students }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(g.expected or 0) }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(g.collected or 0) }}</td>
+        <td class="pct" style="color:{% if pct>=80 %}var(--good){% elif pct>=50 %}var(--warn){% else %}var(--bad){% endif %}">{{ '{:.0f}'.format(pct) }}%</td>
+        <td style="width:120px"><div class="progress {% if pct>=80 %}{% elif pct>=50 %}warn{% else %}bad{% endif %}"><span style="width:{{ pct }}%"></span></div></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if pathways %}
+<section>
+  <h2>By pathway <small>{{ pathways|length }} pathways</small></h2>
+  <p class="section-lead">Career / Cert / Business breakdown.</p>
+  <table class="tbl">
+    <thead><tr>
+      <th>Pathway</th><th style="text-align:right">Students</th><th style="text-align:right">Expected</th>
+      <th style="text-align:right">Collected</th><th style="text-align:right">%</th>
+    </tr></thead>
+    <tbody>
+    {% for r in pathways %}
+      {% set pct = ((r.collected or 0) / r.expected * 100) if r.expected else 0 %}
+      <tr>
+        <td><strong>{{ r.pathway }}</strong></td>
+        <td class="num">{{ r.students }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(r.expected or 0) }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(r.collected or 0) }}</td>
+        <td class="pct">{{ '{:.0f}'.format(pct) }}%</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if methods %}
+<section>
+  <h2>By payment method <small>{{ methods|length }} methods</small></h2>
+  <p class="section-lead">How students are actually paying — helpful for cash-flow forecasting.</p>
+  <table class="tbl">
+    <thead><tr>
+      <th>Method</th><th style="text-align:right">Students</th><th style="text-align:right">Paid</th>
+    </tr></thead>
+    <tbody>
+    {% for r in methods %}
+      <tr>
+        <td>{{ r.method or '—' }}</td>
+        <td class="num">{{ r.students }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(r.paid or 0) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if group_details %}
+<section>
+  <h2>Cohort rosters <small>{{ group_details|length }} cohorts · every active student</small></h2>
+  <p class="section-lead">Each cohort's roster with paid / outstanding position and status. Deferrals are shown for head-count only — their fees live in another term.</p>
+  {% for g in group_details %}
+    {% set pct = g.pct %}
+    <div style="margin-top:{% if loop.first %}4px{% else %}22px{% endif %};page-break-inside:avoid">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:2px solid var(--gold);padding-bottom:4px;margin-bottom:6px">
+        <div><strong style="color:var(--ink-strong);font-size:14px">{{ g.label }}</strong>
+          <span style="color:var(--muted);font-size:11px;margin-left:6px">{{ g.n }} student{{ '' if g.n==1 else 's' }}
+            {% if g.counts.deferred %} · {{ g.counts.deferred }} deferred-in{% endif %}
+            {% if g.counts.cert_issued %} · {{ g.counts.cert_issued }} cert issued{% endif %}
+          </span></div>
+        <div style="font-variant-numeric:tabular-nums;font-size:12px">
+          <span style="color:var(--ink2)">€{{ '{:,.0f}'.format(g.collected) }} / €{{ '{:,.0f}'.format(g.expected) }}</span>
+          <span class="pct" style="margin-left:8px;color:{% if pct>=80 %}var(--good){% elif pct>=50 %}var(--warn){% else %}var(--bad){% endif %};font-weight:700">{{ '{:.0f}'.format(pct) }}%</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        {% if g.counts.paid %}<span class="chip good">{{ g.counts.paid }} paid</span>{% endif %}
+        {% if g.counts.cert_ready %}<span class="chip">{{ g.counts.cert_ready }} cert-ready</span>{% endif %}
+        {% if g.counts.in_progress %}<span class="chip warn">{{ g.counts.in_progress }} in progress</span>{% endif %}
+        {% if g.counts.unpaid %}<span class="chip bad">{{ g.counts.unpaid }} unpaid</span>{% endif %}
+      </div>
+      <table class="tbl">
+        <thead><tr>
+          <th>Student</th><th>Status</th><th>Plan</th>
+          <th style="text-align:right">Price</th><th style="text-align:right">Paid</th>
+          <th style="text-align:right">Owed</th><th style="text-align:right">%</th>
+        </tr></thead>
+        <tbody>
+        {% for s in g.students %}
+          <tr>
+            <td>
+              <strong>{{ s.name }}</strong>
+              {% if s.email %}<span style="color:var(--muted);font-size:10.5px;display:block">{{ s.email }}{% if s.phone %} · {{ s.phone }}{% endif %}</span>{% endif %}
+            </td>
+            <td>
+              {% if s.status == 'paid' %}<span class="chip good">Paid</span>
+              {% elif s.status == 'cert-ready' %}<span class="chip">Cert-ready</span>
+              {% elif s.status == 'in-progress' %}<span class="chip warn">In progress</span>
+              {% elif s.status == 'deferred' %}<span class="chip">Deferred {{ s.deferred_from }}→{{ s.deferred_to }}</span>
+              {% else %}<span class="chip bad">Unpaid</span>{% endif %}
+            </td>
+            <td style="font-size:11px;color:var(--muted)">{{ s.plan_short or '—' }}</td>
+            <td class="num">€{{ '{:,.0f}'.format(s.price or 0) }}</td>
+            <td class="num">€{{ '{:,.0f}'.format(s.spent or 0) }}</td>
+            <td class="num" style="{% if s.outstanding > 0 and not s.is_deferral %}color:var(--bad);font-weight:700{% endif %}">€{{ '{:,.0f}'.format(s.outstanding if s.outstanding > 0 else 0) }}</td>
+            <td class="pct" style="color:{% if (s.pct or 0)>=80 %}var(--good){% elif (s.pct or 0)>=50 %}var(--warn){% else %}var(--muted){% endif %}">{{ '{:.0f}'.format(s.pct or 0) }}%</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Chase list <small>top 15 of {{ chase_total }} outstanding</small></h2>
+  <p class="section-lead">Students with money still due — sorted by largest balance first.</p>
+  {% if chase %}
+  <table class="tbl">
+    <thead><tr>
+      <th>Student</th><th>Cohort</th><th>Status</th>
+      <th style="text-align:right">Balance</th><th style="text-align:right">Attempts</th>
+    </tr></thead>
+    <tbody>
+    {% for r in chase %}
+      <tr>
+        <td>
+          <strong>{{ r.name }}</strong>
+          {% if r.stream %}<span style="color:var(--muted);font-size:11px;display:block">{{ r.stream }} · {{ r.location }}</span>{% endif %}
+        </td>
+        <td style="font-size:11px;color:var(--muted)">{{ r.start_date or '—' }}</td>
+        <td><span class="chip {% if r.status_code==0 %}bad{% else %}warn{% endif %}">{{ r.status }}</span></td>
+        <td class="num" style="color:var(--bad);font-weight:700">€{{ '{:,.0f}'.format(r.balance or 0) }}</td>
+        <td class="num">{{ r.recharge_attempts or 0 }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="insight" style="border-left-color:var(--good)"><strong>Nothing outstanding.</strong> All collected on this term.</div>
+  {% endif %}
+</section>
+
+{% if drops.count %}
+<section>
+  <h2>Drop-offs <small>{{ drops.count }} students</small></h2>
+  <p class="section-lead">Students tagged as dropped-off — their fees are excluded from the headline totals.</p>
+  <div class="insight-grid">
+    <div class="card bad"><div class="label">Drop-offs</div><div class="num">{{ drops.count }}</div></div>
+    <div class="card warn"><div class="label">Money lost</div><div class="num">€{{ '{:,.0f}'.format(drops.money_lost) }}</div></div>
+    <div class="card"><div class="label">Fees already paid</div><div class="num">€{{ '{:,.0f}'.format(drops.fees_spent_total) }}</div><div class="sub">retained by IFT</div></div>
+  </div>
+  {% if drops.rows %}
+  <table class="tbl" style="margin-top:14px">
+    <thead><tr>
+      <th>Student</th><th>Stream</th><th>Location</th>
+      <th style="text-align:right">Price</th><th style="text-align:right">Paid</th><th style="text-align:right">Lost</th>
+    </tr></thead>
+    <tbody>
+    {% for r in drops.rows[:12] %}
+      <tr>
+        <td><strong>{{ r.name }}</strong></td>
+        <td>{{ r.stream }}</td>
+        <td>{{ r.location or '—' }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(r.price or 0) }}</td>
+        <td class="num">€{{ '{:,.0f}'.format(r.spent or 0) }}</td>
+        <td class="num" style="color:var(--bad)">€{{ '{:,.0f}'.format(r.lost) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Insights</h2>
+  <p class="section-lead">Quick reads to focus attention.</p>
+  {% set top_stream = streams|sort(attribute='collected', reverse=True)|first if streams else none %}
+  {% set top_loc = locations|sort(attribute='collected', reverse=True)|first if locations else none %}
+  {% set biggest_cohort = groups|sort(attribute='expected', reverse=True)|first if groups else none %}
+  <div class="insight-grid">
+    {% if top_stream %}
+    <div class="insight">
+      💰 <strong>{{ top_stream.stream }}</strong> is the biggest revenue stream — €{{ '{:,.0f}'.format(top_stream.collected) }} collected ({{ '{:.0f}'.format(top_stream.collected/(macro.collected or 1)*100) }}% of term total).
+    </div>
+    {% endif %}
+    {% if top_loc %}
+    <div class="insight">
+      📍 <strong>{{ top_loc.location }}</strong> leads by location — €{{ '{:,.0f}'.format(top_loc.collected) }} from {{ top_loc.students }} students.
+    </div>
+    {% endif %}
+    {% if biggest_cohort %}
+    <div class="insight">
+      🏫 Biggest cohort: <strong>{{ biggest_cohort.label }}</strong> — €{{ '{:,.0f}'.format(biggest_cohort.expected) }} expected, {{ '{:.0f}'.format((biggest_cohort.collected or 0)/(biggest_cohort.expected or 1)*100) }}% collected.
+    </div>
+    {% endif %}
+    <div class="insight" style="border-left-color:{% if macro.rate_pct >= 80 %}var(--good){% elif macro.rate_pct >= 50 %}var(--warn){% else %}var(--bad){% endif %}">
+      📈 Collection rate is <strong>{{ '{:.1f}'.format(macro.rate_pct) }}%</strong> — {% if macro.rate_pct >= 80 %}strong; low chase burden expected{% elif macro.rate_pct >= 50 %}mid; focus on the chase list to lift{% else %}below 50%; the chase list is the priority{% endif %}.
+    </div>
+    {% if chase_total %}
+    <div class="insight" style="border-left-color:var(--bad)">
+      ⚠️ <strong>{{ chase_total }}</strong> student{{ '' if chase_total==1 else 's' }} still owe money on {{ period }}. Top 15 shown above.
+    </div>
+    {% endif %}
+    {% if drops.count %}
+    <div class="insight" style="border-left-color:var(--warn)">
+      📉 <strong>{{ drops.count }}</strong> drop-off{{ '' if drops.count==1 else 's' }} — €{{ '{:,.0f}'.format(drops.money_lost) }} in unpaid fees never landed, but €{{ '{:,.0f}'.format(drops.fees_spent_total) }} was retained.
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<div class="footer">
+  Image Fitness Training · Generated {{ generated_at }} · This report is a live snapshot; regenerate any time from <code>/admin/finance-report</code>.
+</div>
+
+</div>
+</body>
+</html>

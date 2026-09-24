@@ -625,6 +625,47 @@ def admin_deferrals_json(migration_period: str = "A26",
     }
 
 
+@app.get("/admin/finance-report", response_class=HTMLResponse)
+def admin_finance_report(request: Request, period: str = "S26"):
+    """Standalone, printable, brand-styled 'finance report as it stands'.
+    Composes headline / by-stream / by-location / cohort / chase into a
+    single page you can save as PDF or send. Everything is embedded — no
+    external assets, so exporting as HTML gives a self-contained file."""
+    from datetime import datetime as _dt
+    mac = queries.macro(period)
+    streams = queries.by_stream(period)
+    locations = queries.by_location(period)
+    pathways = queries.by_pathway(period)
+    methods  = queries.by_payment_method(period)
+    groups   = queries.class_groups(period)
+    chase    = queries.chase_list(period)
+    fees     = queries.fees_summary(period)
+    drops    = queries.drop_offs(period)
+    top_chase = sorted(chase, key=lambda x: -(x.get("balance") or 0))[:15]
+    # Per-cohort student rosters — the "insights per student, per group" ask.
+    group_details = []
+    for g in groups:
+        gd = queries.group_detail(g["group_id"])
+        if gd: group_details.append(gd)
+    return templates.TemplateResponse("finance_report.html", {
+        "request": request,
+        "period": period,
+        "generated_at": _dt.now().strftime("%A %d %B %Y · %H:%M"),
+        "macro": mac,
+        "streams": streams,
+        "locations": locations,
+        "pathways": pathways,
+        "methods": methods,
+        "groups": groups,
+        "chase": top_chase,
+        "chase_total": len(chase),
+        "group_details": group_details,
+        "fees": fees,
+        "drops": drops,
+        "available_periods": queries.periods_with_data(),
+    })
+
+
 @app.get("/admin/wayback", response_class=HTMLResponse)
 def admin_wayback(request: Request,
                    date: str | None = None,

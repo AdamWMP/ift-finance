@@ -50,6 +50,9 @@
   {% block term_switcher %}{% endblock %}
   <div class="topbar-right">
     <button class="topbtn" id="searchBtn" title="Search (⌘K)">⌘K Search</button>
+    {% if request.state.show_dashboard %}
+    <a class="topbtn" href="/admin/finance-report{% if request.query_params.get('period') %}?period={{ request.query_params.get('period') }}{% endif %}" title="Export finance report as it stands">📄 Report</a>
+    {% endif %}
     <button class="topbtn" id="themeBtn" title="Toggle theme">◐</button>
     <form method="post" action="/admin/sync" class="sync-form" id="syncForm">
       <button type="submit" class="sync-btn" title="Pull latest from ONtraport + Sales Board">
