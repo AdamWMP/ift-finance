@@ -525,13 +525,17 @@ def apply_tags() -> dict:
             # alone if the deferral tag has no term marker. On seeded rows
             # the only permitted write is filling a blank origin on a row
             # the seed already marked as a deferral.
+            # Seeded rows: never — the workbook's origin is final. Live rows:
+            # never INTO a workbook-owned term (that term's money is the
+            # sheet's; such a row is held out as 'unlisted' instead).
             if is_deferral and origin_period:
-                c.execute("""
-                    UPDATE students SET revenue_period = ?
-                    WHERE contact_id = ? AND revenue_period != ?
-                      AND (COALESCE(is_seeded, 0) = 0
-                           OR (is_deferral = 1 AND COALESCE(revenue_period, '') = ''))
-                """, (origin_period, cid, origin_period))
+                from .db import seeded_terms as _seeded_terms
+                if origin_period not in _seeded_terms():
+                    c.execute("""
+                        UPDATE students SET revenue_period = ?
+                        WHERE contact_id = ? AND revenue_period != ?
+                          AND COALESCE(is_seeded, 0) = 0
+                    """, (origin_period, cid, origin_period))
     print("tags applied:", counts, flush=True)
     return counts
 

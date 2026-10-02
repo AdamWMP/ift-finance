@@ -1512,11 +1512,17 @@ def backfill_deferral_periods() -> dict:
     from datetime import date as _date
     stats = {"updated": 0, "unchanged": 0, "no_invoice": 0}
     with get_db() as c:
+        # Live rows only: a seeded row's origin is whatever the workbook
+        # said (or blank = not counted); invoice dates are a heuristic and
+        # a late payer would otherwise be "resolved" into the wrong term
+        # (Kevin Furey → S26, 2 Oct 2026).
         rows = c.execute("""
             SELECT contact_id, stream, class_period, revenue_period
             FROM students
-            WHERE is_deferral = 1
+            WHERE is_deferral = 1 AND COALESCE(is_seeded, 0) = 0
         """).fetchall()
+    from .db import seeded_terms as _seeded_terms
+    protected = _seeded_terms()
     for r in rows:
         with get_db() as c:
             # Earliest PLAUSIBLE paid invoice. ONtraport leaves closed_date at
@@ -1545,14 +1551,20 @@ def backfill_deferral_periods() -> dict:
         if not origin:
             stats["no_invoice"] += 1
             continue
+        if origin in protected:
+            # Workbook-owned term: its money is the sheet's. Hold the live
+            # row out (blank) rather than count it there by invoice date.
+            if r["revenue_period"]:
+                with get_db() as c:
+                    c.execute("""UPDATE students SET revenue_period = ''
+                                 WHERE contact_id=? AND stream=? AND COALESCE(is_seeded,0)=0""",
+                              (r["contact_id"], r["stream"]))
+            stats["held_out"] = stats.get("held_out", 0) + 1
+            continue
         if origin != r["revenue_period"]:
             with get_db() as c:
-                # Seeded rows: only fill a blank origin — the workbook's
-                # explicit origin term wins over the invoice-derived one.
                 c.execute("""UPDATE students SET revenue_period = ?
-                             WHERE contact_id=? AND stream=?
-                               AND (COALESCE(is_seeded, 0) = 0
-                                    OR COALESCE(revenue_period, '') = '')""",
+                             WHERE contact_id=? AND stream=? AND COALESCE(is_seeded,0)=0""",
                           (origin, r["contact_id"], r["stream"]))
             stats["updated"] += 1
         else:
@@ -2582,22 +2594,28 @@ def class_groups(period: str) -> list[dict]:
         # Money-in rule per cohort: drop-offs' paid money counts, their
         # unpaid remainder doesn't; deferred-in students are head-counted
         # but their money stays in the origin term.
+        # Head-count is by class; money only where this is also the revenue
+        # term — so a student sold in A25 sitting in an S26 class (or a live
+        # row held out of a seeded term, revenue_period='') is counted as a
+        # body in the room but never as this term's money.
         rs = c.execute(f"""
             SELECT group_id, stream, location, start_date, timetable,
                    {ACTIVE_HEADCOUNT_SQL} AS students,
-                   SUM(CASE WHEN is_deferral=1 THEN 1 ELSE 0 END) AS deferred_in,
-                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {EXPECTED_SQL}  ELSE 0 END),0) AS expected,
-                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {COLLECTED_SQL} ELSE 0 END),0) AS collected,
-                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {LOST_SQL}      ELSE 0 END),0) AS lost
+                   SUM(CASE WHEN COALESCE(revenue_period,'') != ? AND COALESCE(revenue_period,'') != '' THEN 1 ELSE 0 END) AS deferred_in,
+                   SUM(CASE WHEN COALESCE(revenue_period,'') = '' THEN 1 ELSE 0 END) AS unlisted,
+                   COALESCE(SUM(CASE WHEN revenue_period = ? THEN {EXPECTED_SQL}  ELSE 0 END),0) AS expected,
+                   COALESCE(SUM(CASE WHEN revenue_period = ? THEN {COLLECTED_SQL} ELSE 0 END),0) AS collected,
+                   COALESCE(SUM(CASE WHEN revenue_period = ? THEN {LOST_SQL}      ELSE 0 END),0) AS lost
             FROM students
             WHERE class_period = ?
             GROUP BY group_id ORDER BY start_date, stream, location
-        """, (period,)).fetchall()
+        """, (period, period, period, period, period)).fetchall()
     out = []
     for r in rs:
         d = _row_with_pct(r)
         d["label"] = friendly_group_label(r["stream"], r["location"], r["start_date"], r["timetable"])
         d["deferred_in"] = r["deferred_in"] or 0
+        d["unlisted"]    = r["unlisted"] or 0     # live rows held out of a seeded term
         out.append(d)
     return out
 

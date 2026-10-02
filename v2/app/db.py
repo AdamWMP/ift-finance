@@ -334,6 +334,23 @@ def get_meta(key: str) -> tuple[str | None, str | None]:
         r = c.execute("SELECT value, updated_at FROM meta WHERE key=?", (key,)).fetchone()
     return (r["value"], r["updated_at"]) if r else (None, None)
 
+def seeded_terms() -> set[str]:
+    """Terms imported from a Finance Report workbook (A25, later S25 …).
+    For these the workbook IS the term: no live ONtraport row may be
+    assigned revenue there by date, tag, or invoice — it is held out
+    (revenue_period='') and surfaced as 'unlisted' instead."""
+    # Derived from the seeded rows' REVENUE term (non-deferrals only): that
+    # is the term the workbook was for. Not class_period — a student sold
+    # in A25 for a Feb-2026 intake has an S26 class, and S26 is not
+    # workbook-owned. Not deferrals — their revenue term is wherever they
+    # came from (S25, A23 …), which may not be imported at all.
+    with get_db() as c:
+        return {r[0] for r in c.execute(
+            "SELECT DISTINCT revenue_period FROM students "
+            "WHERE COALESCE(is_seeded,0)=1 AND COALESCE(is_deferral,0)=0 "
+            "  AND COALESCE(revenue_period,'') != ''"
+        ).fetchall()}
+
 def parse_date(s: str | None) -> date | None:
     if not s: return None
     s = s.strip()

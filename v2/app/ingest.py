@@ -79,6 +79,14 @@ def ingest_csv():
         # them, and the re-insert from ONtraport's current fields would
         # silently re-home them to whatever term those fields now describe.
         c.execute("DELETE FROM students WHERE COALESCE(is_seeded, 0) = 0")
+        # Terms that were imported from a Finance Report workbook. For those
+        # the workbook is the whole term (Adam, 2 Oct 2026): a live ONtraport
+        # row whose dates would land it there is NOT counted — it's held out
+        # (revenue_period='') and surfaced as 'unlisted' on the cohort so it
+        # can be added to the sheet or corrected in ONtraport.
+        from .db import seeded_terms as _seeded_terms
+        seeded_terms = _seeded_terms()
+        held_out = 0
         ins = 0
         for r in rows:
             for stream, loc_c, qual_c, start_c, price_c, spent_c, plan_c, tt_c, method_c in COURSES:
@@ -121,6 +129,11 @@ def ingest_csv():
                         break
                 if is_def:
                     rev_period = origin_period or ""  # blank only if origin unparseable
+                # Workbook-owned term: the live row's money is not this
+                # term's (see seeded_terms above). Class stays, money held out.
+                if rev_period and rev_period in seeded_terms:
+                    rev_period = ""
+                    held_out += 1
 
                 # The CSV's "Name" column already holds the full name; the
                 # separate "Last Name" column duplicates the surname. Split
@@ -140,29 +153,35 @@ def ingest_csv():
                         is_deferral, is_dropoff, is_grant, payment_status
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(contact_id, stream) DO UPDATE SET
-                        -- Seeded historical rows (A25/S25 imports) keep their cohort
-                        -- fields: ONtraport's course fields get reused when a student
-                        -- re-enrols, so a live overwrite would silently move them out
-                        -- of the historical term. Only the money (spent) and the
-                        -- derived payment_status refresh — that is the live
-                        -- replacement for the sheet's phone-number SUMIFS.
-                        first_name     = CASE WHEN students.is_seeded=1 THEN students.first_name     ELSE excluded.first_name     END,
-                        last_name      = CASE WHEN students.is_seeded=1 THEN students.last_name      ELSE excluded.last_name      END,
-                        email          = CASE WHEN students.is_seeded=1 THEN students.email          ELSE excluded.email          END,
-                        phone          = CASE WHEN students.is_seeded=1 THEN students.phone          ELSE excluded.phone          END,
+                        -- Seeded historical rows (A25/S25 imports): the SHEET owns the
+                        -- sale — price, revenue term, drop-off/grant flags, plan, method,
+                        -- what was bought. ONtraport owns the CLASS — where the student
+                        -- physically sits now (location / start / timetable / class term)
+                        -- plus the money (spent) and contact details. A student sold in
+                        -- A25 for a Feb-2026 intake therefore keeps A25 revenue and gets
+                        -- an S26 class, and is marked cross-term (is_deferral) so S26
+                        -- head-counts them without re-counting their money.
+                        first_name     = excluded.first_name,
+                        last_name      = excluded.last_name,
+                        email          = excluded.email,
+                        phone          = excluded.phone,
                         qualification  = CASE WHEN students.is_seeded=1 THEN students.qualification  ELSE excluded.qualification  END,
-                        location       = CASE WHEN students.is_seeded=1 THEN students.location       ELSE excluded.location       END,
-                        start_date     = CASE WHEN students.is_seeded=1 THEN students.start_date     ELSE excluded.start_date     END,
-                        timetable      = CASE WHEN students.is_seeded=1 THEN students.timetable      ELSE excluded.timetable      END,
+                        location       = CASE WHEN students.is_seeded=1 AND excluded.location   = '' THEN students.location   ELSE excluded.location   END,
+                        start_date     = CASE WHEN students.is_seeded=1 AND excluded.start_date = '' THEN students.start_date ELSE excluded.start_date END,
+                        timetable      = CASE WHEN students.is_seeded=1 AND excluded.timetable  = '' THEN students.timetable  ELSE excluded.timetable  END,
                         price          = CASE WHEN students.is_seeded=1 THEN students.price          ELSE excluded.price          END,
                         spent          = excluded.spent,
                         payment_plan   = CASE WHEN students.is_seeded=1 THEN students.payment_plan   ELSE excluded.payment_plan   END,
                         payment_method = CASE WHEN students.is_seeded=1 THEN students.payment_method ELSE excluded.payment_method END,
                         pathway        = CASE WHEN students.is_seeded=1 THEN students.pathway        ELSE excluded.pathway        END,
-                        group_id       = CASE WHEN students.is_seeded=1 THEN students.group_id       ELSE excluded.group_id       END,
-                        class_period   = CASE WHEN students.is_seeded=1 THEN students.class_period   ELSE excluded.class_period   END,
+                        group_id       = CASE WHEN students.is_seeded=1 AND excluded.start_date = '' THEN students.group_id     ELSE excluded.group_id     END,
+                        class_period   = CASE WHEN students.is_seeded=1 AND excluded.class_period = '' THEN students.class_period ELSE excluded.class_period END,
                         revenue_period = CASE WHEN students.is_seeded=1 THEN students.revenue_period ELSE excluded.revenue_period END,
-                        is_deferral    = CASE WHEN students.is_seeded=1 THEN students.is_deferral    ELSE excluded.is_deferral    END,
+                        is_deferral    = CASE WHEN students.is_seeded=1
+                                              THEN CASE WHEN excluded.class_period != ''
+                                                         AND excluded.class_period != COALESCE(students.revenue_period, '')
+                                                        THEN 1 ELSE students.is_deferral END
+                                              ELSE excluded.is_deferral END,
                         is_grant       = CASE WHEN students.is_seeded=1 THEN students.is_grant       ELSE excluded.is_grant       END,
                         payment_status = CASE WHEN students.is_seeded=1
                                               THEN CASE WHEN students.price <= 0 THEN 'unpaid'
@@ -183,7 +202,16 @@ def ingest_csv():
                     derive_payment_status(price, spent),
                 ))
                 ins += 1
-        print(f"upserted {ins} student×stream rows → {DB_PATH.name}")
+        # Real count of LIVE rows held out (the loop counter also ticks for
+        # seeded contacts the CSV re-feeds, whose blank the guard discards).
+        if seeded_terms:
+            qm = ",".join("?" * len(seeded_terms))
+            held_out = c.execute(
+                f"SELECT COUNT(*) FROM students WHERE COALESCE(is_seeded,0)=0 "
+                f"AND class_period IN ({qm}) AND COALESCE(revenue_period,'')=''",
+                tuple(sorted(seeded_terms))).fetchone()[0]
+        print(f"upserted {ins} student×stream rows → {DB_PATH.name}"
+              + (f" · {held_out} live rows held out of workbook-owned terms {sorted(seeded_terms)}" if held_out else ""))
 
 
 # --- Historical-term JSON seed import ---------------------------------------
