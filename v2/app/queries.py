@@ -5,6 +5,23 @@ from collections import defaultdict
 from datetime import date, timedelta
 from .db import CATEGORY_STREAM, SALE_VALUE, SALES_TARGETS, get_db
 
+# --- Money-in rule (Adam, 2 Oct 2026) ----------------------------------------
+# One rule for every headline and breakdown, every term:
+#   collected = everything that actually landed, drop-offs included
+#   expected  = what can still be counted: active students' price, plus
+#               whatever a drop-off paid before leaving (their unpaid
+#               remainder will never arrive, so it is not "potential")
+#   lost      = that unpaid remainder, surfaced beside the headline
+# This is the workbook's G2 (= potential − lost). Before this the hero
+# excluded drop-offs from both sides (silently dropping real money) while
+# the Simon panel and the sales bar included them on both sides, so the
+# two never reconciled.
+EXPECTED_SQL  = "CASE WHEN COALESCE(is_dropoff,0)=1 THEN COALESCE(spent,0) ELSE COALESCE(price,0) END"
+COLLECTED_SQL = "COALESCE(spent,0)"
+LOST_SQL      = "CASE WHEN COALESCE(is_dropoff,0)=1 THEN MAX(COALESCE(price,0)-COALESCE(spent,0),0) ELSE 0 END"
+ACTIVE_HEADCOUNT_SQL  = "COUNT(DISTINCT CASE WHEN COALESCE(is_dropoff,0)=0 THEN contact_id END)"
+DROPOFF_HEADCOUNT_SQL = "COUNT(DISTINCT CASE WHEN COALESCE(is_dropoff,0)=1 THEN contact_id END)"
+
 
 def shorten_plan(s: str | None) -> str:
     """Compress messy payment-plan strings into a short readable form.
@@ -396,22 +413,26 @@ def _sb_snapshot_by_category(snapshot_date: str, period: str,
 def macro_at(snapshot_date: str, period: str) -> dict:
     """Same shape as macro() but reads from student_snapshot on the given date."""
     with get_db() as c:
-        r = c.execute("""
+        r = c.execute(f"""
             SELECT
-                COUNT(DISTINCT contact_id) AS students,
-                COALESCE(SUM(price),0)     AS expected,
-                COALESCE(SUM(spent),0)     AS collected
+                {ACTIVE_HEADCOUNT_SQL}            AS students,
+                {DROPOFF_HEADCOUNT_SQL}           AS dropoffs,
+                COALESCE(SUM({EXPECTED_SQL}),0)   AS expected,
+                COALESCE(SUM({COLLECTED_SQL}),0)  AS collected,
+                COALESCE(SUM({LOST_SQL}),0)       AS lost
             FROM student_snapshot
-            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            WHERE snapshot_date=? AND revenue_period=?
         """, (snapshot_date, period)).fetchone()
     sb_extra = sum(_sb_snapshot_by_category(snapshot_date, period).values())
     expected  = (r["expected"] or 0) + sb_extra
     collected = (r["collected"] or 0) + sb_extra
     return {
         "students":    r["students"] or 0,
+        "dropoffs":    r["dropoffs"] or 0,
         "expected":    expected,
         "collected":   collected,
         "outstanding": expected - collected,
+        "lost":        r["lost"] or 0,
         "rate_pct":    (collected / expected * 100) if expected else 0.0,
     }
 
@@ -420,12 +441,12 @@ def by_stream_at(snapshot_date: str, period: str) -> list[dict]:
     """Per-stream aggregation as of a given date."""
     out: dict[str, dict] = {}
     with get_db() as c:
-        rs = c.execute("""
-            SELECT stream, COUNT(*) AS students,
-                   COALESCE(SUM(price),0) AS expected,
-                   COALESCE(SUM(spent),0) AS collected
+        rs = c.execute(f"""
+            SELECT stream, {ACTIVE_HEADCOUNT_SQL} AS students,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected
             FROM student_snapshot
-            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            WHERE snapshot_date=? AND revenue_period=?
             GROUP BY stream
         """, (snapshot_date, period)).fetchall()
     for r in rs:
@@ -444,13 +465,13 @@ def by_stream_at(snapshot_date: str, period: str) -> list[dict]:
 def by_location_at(snapshot_date: str, period: str) -> list[dict]:
     """Per-location aggregation as of a given date."""
     with get_db() as c:
-        rs = c.execute("""
+        rs = c.execute(f"""
             SELECT COALESCE(NULLIF(location,''),'—') AS location,
-                   COUNT(DISTINCT contact_id) AS students,
-                   COALESCE(SUM(price),0)     AS expected,
-                   COALESCE(SUM(spent),0)     AS collected
+                   {ACTIVE_HEADCOUNT_SQL}           AS students,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected
             FROM student_snapshot
-            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            WHERE snapshot_date=? AND revenue_period=?
             GROUP BY location
             ORDER BY expected DESC
         """, (snapshot_date, period)).fetchall()
@@ -488,13 +509,14 @@ def wayback_diff(from_date: str, to_date: str, period: str) -> dict:
     wayback UI.
     """
     with get_db() as c:
+        # Drop-offs included so "became a drop-off" shows up as a change.
         old = {(r["contact_id"], r["stream"]): dict(r) for r in c.execute("""
             SELECT * FROM student_snapshot
-            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            WHERE snapshot_date=? AND revenue_period=?
         """, (from_date, period)).fetchall()}
         new = {(r["contact_id"], r["stream"]): dict(r) for r in c.execute("""
             SELECT * FROM student_snapshot
-            WHERE snapshot_date=? AND revenue_period=? AND is_dropoff=0
+            WHERE snapshot_date=? AND revenue_period=?
         """, (to_date, period)).fetchall()}
     added, removed, changed = [], [], []
     for key, r in new.items():
@@ -504,7 +526,7 @@ def wayback_diff(from_date: str, to_date: str, period: str) -> dict:
             o = old[key]
             deltas = {}
             for f in ("spent", "price", "revenue_period", "class_period",
-                      "start_date", "is_deferral", "payment_status"):
+                      "start_date", "is_deferral", "is_dropoff", "payment_status"):
                 if (o.get(f) or "") != (r.get(f) or ""):
                     deltas[f] = {"from": o.get(f), "to": r.get(f)}
             if deltas:
@@ -632,23 +654,28 @@ def _sales_board_by_category(period: str, *, exclude_overlapping: bool = True) -
     return out
 
 def macro(period: str) -> dict:
+    """Term headline under the money-in rule (see EXPECTED_SQL)."""
     with get_db() as c:
-        r = c.execute("""
+        r = c.execute(f"""
             SELECT
-                COUNT(DISTINCT contact_id) AS students,
-                COALESCE(SUM(price),0)     AS expected,
-                COALESCE(SUM(spent),0)     AS collected
+                {ACTIVE_HEADCOUNT_SQL}            AS students,
+                {DROPOFF_HEADCOUNT_SQL}           AS dropoffs,
+                COALESCE(SUM({EXPECTED_SQL}),0)   AS expected,
+                COALESCE(SUM({COLLECTED_SQL}),0)  AS collected,
+                COALESCE(SUM({LOST_SQL}),0)       AS lost
             FROM students
-            WHERE revenue_period = ? AND is_dropoff = 0
+            WHERE revenue_period = ?
         """, (period,)).fetchone()
     sb_extra = sum(_sales_board_by_category(period).values())
-    expected  = (r["expected"] or 0) + sb_extra      # no separate "expected"
+    expected  = (r["expected"] or 0) + sb_extra      # SB streams: collected == expected
     collected = (r["collected"] or 0) + sb_extra
     return {
         "students": r["students"] or 0,
+        "dropoffs": r["dropoffs"] or 0,
         "expected": expected,
         "collected": collected,
         "outstanding": expected - collected,
+        "lost": r["lost"] or 0,
         "rate_pct": (collected / expected * 100) if expected else 0.0,
     }
 
@@ -657,13 +684,13 @@ def by_stream(period: str) -> list[dict]:
     PPN, FBA, etc.) from sales_board transactions, mapped via CATEGORY_STREAM."""
     out: dict[str, dict] = {}
     with get_db() as c:
-        rs = c.execute("""
+        rs = c.execute(f"""
             SELECT stream,
-                   COUNT(*) AS students,
-                   COALESCE(SUM(price),0) AS expected,
-                   COALESCE(SUM(spent),0) AS collected
+                   {ACTIVE_HEADCOUNT_SQL}           AS students,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected
             FROM students
-            WHERE revenue_period=? AND is_dropoff=0
+            WHERE revenue_period=?
             GROUP BY stream
         """, (period,)).fetchall()
     for r in rs:
@@ -680,27 +707,27 @@ def by_stream(period: str) -> list[dict]:
 
 def by_location(period: str) -> list[dict]:
     with get_db() as c:
-        rs = c.execute("""
+        rs = c.execute(f"""
             SELECT COALESCE(NULLIF(location,''),'—') AS location,
-                   COUNT(DISTINCT contact_id) AS students,
-                   COUNT(DISTINCT group_id)   AS groups,
-                   COALESCE(SUM(price),0)     AS expected,
-                   COALESCE(SUM(spent),0)     AS collected
+                   {ACTIVE_HEADCOUNT_SQL}           AS students,
+                   COUNT(DISTINCT group_id)         AS groups,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected
             FROM students
-            WHERE revenue_period = ? AND is_dropoff = 0
+            WHERE revenue_period = ?
             GROUP BY location ORDER BY expected DESC
         """, (period,)).fetchall()
     return [_row_with_pct(r) for r in rs]
 
 def by_pathway(period: str) -> list[dict]:
     with get_db() as c:
-        rs = c.execute("""
+        rs = c.execute(f"""
             SELECT pathway,
-                   COUNT(DISTINCT contact_id) AS sales,
-                   COALESCE(SUM(price),0) AS expected,
-                   COALESCE(SUM(spent),0) AS collected
+                   {ACTIVE_HEADCOUNT_SQL}           AS sales,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected
             FROM students
-            WHERE revenue_period = ? AND is_dropoff = 0
+            WHERE revenue_period = ?
             GROUP BY pathway ORDER BY collected DESC
         """, (period,)).fetchall()
     return [_row_with_pct(r) for r in rs]
@@ -767,14 +794,13 @@ def sales_summary(period: str) -> dict:
             FROM students
             WHERE revenue_period = ? AND is_dropoff = 0
         """, (period,)).fetchone()
-        # collected + expected both include drop-offs — drop-offs paid real
-        # money (counts as collected) and their headline price was part of
-        # the original sale (counts as expected). Matches fees_summary.total
-        # exactly so the bar reconciles with both Total Fees Due and Total
-        # Fees Paid in the hero card.
-        all_sums = c.execute("""
-            SELECT COALESCE(SUM(spent),0) AS spent_all,
-                   COALESCE(SUM(price),0) AS price_all
+        # Money-in rule: collected includes what drop-offs paid; expected
+        # caps a drop-off at what they paid (their unpaid remainder is
+        # "lost", not potential). Same rule as macro() so the bar, the hero
+        # and the L18 push all agree.
+        all_sums = c.execute(f"""
+            SELECT COALESCE(SUM({COLLECTED_SQL}),0) AS spent_all,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS price_all
             FROM students WHERE revenue_period = ?
         """, (period,)).fetchone()
     sb_extra = sum(_sales_board_by_category(period).values())
@@ -1054,11 +1080,13 @@ def by_payment_method(period: str) -> list[dict]:
     """
     manual = _manual_payments_per_contact(period)
     with get_db() as c:
-        students = c.execute("""
+        # Drop-offs included: the money they paid is real and lands under
+        # their method, so this reconciles with macro().collected.
+        students = c.execute(f"""
             SELECT contact_id, COALESCE(NULLIF(payment_method,''),'Stripe') AS method,
-                   COALESCE(SUM(spent),0) AS spent
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS spent
             FROM students
-            WHERE revenue_period=? AND is_dropoff=0
+            WHERE revenue_period=?
             GROUP BY contact_id, method
         """, (period,)).fetchall()
     by_method: dict[str, float] = {}
@@ -1149,10 +1177,11 @@ def fees_summary(period: str) -> dict:
             SELECT COALESCE(SUM(price),0) AS due, COALESCE(SUM(spent),0) AS paid
             FROM students WHERE revenue_period=?
         """, (period,)).fetchone()
-        # active students only
-        active = c.execute("""
-            SELECT COALESCE(SUM(price),0) AS due, COALESCE(SUM(spent),0) AS paid
-            FROM students WHERE revenue_period=? AND is_dropoff=0
+        # headline under the money-in rule (drop-offs' paid money counts,
+        # their unpaid remainder is "lost", not due)
+        active = c.execute(f"""
+            SELECT COALESCE(SUM({EXPECTED_SQL}),0) AS due, COALESCE(SUM({COLLECTED_SQL}),0) AS paid
+            FROM students WHERE revenue_period=?
         """, (period,)).fetchone()
     sb_extra = sum(_sales_board_by_category(period).values())
     all_due  = (all_r["due"] or 0) + sb_extra
@@ -1633,9 +1662,9 @@ def _segment_fees(period: str, where_sql: str, params: tuple) -> dict:
     the hero card."""
     with get_db() as c:
         r = c.execute(f"""
-            SELECT COUNT(DISTINCT contact_id) AS contacts,
-                   COALESCE(SUM(price),0) AS due,
-                   COALESCE(SUM(spent),0) AS paid
+            SELECT {ACTIVE_HEADCOUNT_SQL}           AS contacts,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS due,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS paid
             FROM students
             WHERE revenue_period=? {where_sql}
         """, (period, *params)).fetchone()
@@ -2032,13 +2061,14 @@ def revenue_audit(period: str) -> dict:
     comes from, including which Sales Board categories were excluded and why.
     Use the /admin/audit page to inspect."""
     with get_db() as c:
-        per_stream = c.execute("""
+        per_stream = c.execute(f"""
             SELECT stream,
-                   COUNT(*)                 AS contacts,
-                   COALESCE(SUM(price),0)   AS expected,
-                   COALESCE(SUM(spent),0)   AS collected
+                   {ACTIVE_HEADCOUNT_SQL}           AS contacts,
+                   COALESCE(SUM({EXPECTED_SQL}),0)  AS expected,
+                   COALESCE(SUM({COLLECTED_SQL}),0) AS collected,
+                   COALESCE(SUM({LOST_SQL}),0)      AS lost
             FROM students
-            WHERE revenue_period=? AND is_dropoff=0
+            WHERE revenue_period=?
             GROUP BY stream ORDER BY collected DESC
         """, (period,)).fetchall()
         all_sb = c.execute("""
@@ -2549,14 +2579,18 @@ def class_groups(period: str) -> list[dict]:
     a badge.
     """
     with get_db() as c:
-        rs = c.execute("""
+        # Money-in rule per cohort: drop-offs' paid money counts, their
+        # unpaid remainder doesn't; deferred-in students are head-counted
+        # but their money stays in the origin term.
+        rs = c.execute(f"""
             SELECT group_id, stream, location, start_date, timetable,
-                   COUNT(*) AS students,
+                   {ACTIVE_HEADCOUNT_SQL} AS students,
                    SUM(CASE WHEN is_deferral=1 THEN 1 ELSE 0 END) AS deferred_in,
-                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN price ELSE 0 END),0) AS expected,
-                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN spent ELSE 0 END),0) AS collected
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {EXPECTED_SQL}  ELSE 0 END),0) AS expected,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {COLLECTED_SQL} ELSE 0 END),0) AS collected,
+                   COALESCE(SUM(CASE WHEN is_deferral=0 THEN {LOST_SQL}      ELSE 0 END),0) AS lost
             FROM students
-            WHERE class_period = ? AND is_dropoff = 0
+            WHERE class_period = ?
             GROUP BY group_id ORDER BY start_date, stream, location
         """, (period,)).fetchall()
     out = []

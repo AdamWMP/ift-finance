@@ -148,7 +148,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
     <div class="card {% if macro.rate_pct >= 80 %}good{% elif macro.rate_pct >= 50 %}warn{% else %}bad{% endif %}">
       <div class="label">Collection Rate</div>
       <div class="num">{{ '{:.1f}'.format(macro.rate_pct) }}<small>%</small></div>
-      <div class="sub">€{{ '{:,.0f}'.format(macro.outstanding) }} outstanding</div>
+      <div class="sub">€{{ '{:,.0f}'.format(macro.outstanding) }} outstanding{% if macro.lost %} · €{{ '{:,.0f}'.format(macro.lost) }} lost to {{ macro.dropoffs }} drop-off{{ '' if macro.dropoffs == 1 else 's' }} (not counted in Expected){% endif %}</div>
     </div>
   </div>
 </section>

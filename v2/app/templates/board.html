@@ -126,18 +126,21 @@
 </section>
 {% endif %}
 
+{# Money-in rule (2 Oct 2026): collected counts every euro that landed,
+   drop-offs included; due counts what can still come in (a drop-off is
+   capped at what they paid); their unpaid remainder is "lost" below. #}
 <section class="hero">
   <div class="card">
-    <div class="label">Total Fees Due</div>
-    <div class="num">€{{ "{:,.0f}".format(fees.total.due) }}</div>
+    <div class="label">Fees Due</div>
+    <div class="num">€{{ "{:,.0f}".format(macro.expected) }}</div>
   </div>
   <div class="card">
-    <div class="label">Total Fees Paid</div>
-    <div class="num">€{{ "{:,.0f}".format(fees.total.paid) }}</div>
+    <div class="label">Fees Paid</div>
+    <div class="num">€{{ "{:,.0f}".format(macro.collected) }}</div>
   </div>
   <div class="card">
-    <div class="label">Total Fees Owed</div>
-    <div class="num">€{{ "{:,.0f}".format(fees.total.owed) }}</div>
+    <div class="label">Fees Owed</div>
+    <div class="num">€{{ "{:,.0f}".format(macro.outstanding) }}</div>
   </div>
   <div class="card accent">
     <div class="label">Collection Rate</div>
@@ -146,11 +149,11 @@
 </section>
 
 <section class="block">
-  <h2>Adjusted for drop-offs</h2>
+  <h2>Drop-offs</h2>
   <div class="hero" style="grid-template-columns:repeat(3,1fr)">
-    <div class="card"><div class="label">Active Fees Due</div><div class="num">€{{ "{:,.0f}".format(fees.active.due) }}</div></div>
-    <div class="card"><div class="label">Active Fees Paid</div><div class="num">€{{ "{:,.0f}".format(fees.active.paid) }}</div></div>
-    <div class="card"><div class="label">Money Lost (drop-offs)</div><div class="num">€{{ "{:,.0f}".format(fees.drop.money_lost) }}</div></div>
+    <div class="card"><div class="label">Money Lost (never coming in)</div><div class="num">€{{ "{:,.0f}".format(macro.lost) }}</div></div>
+    <div class="card"><div class="label">Drop-offs</div><div class="num">{{ macro.dropoffs }}</div></div>
+    <div class="card"><div class="label">Full-price Potential (incl. lost)</div><div class="num">€{{ "{:,.0f}".format(fees.total.due) }}</div></div>
   </div>
 </section>
 
