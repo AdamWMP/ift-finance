@@ -8,7 +8,7 @@ Run locally:
 from __future__ import annotations
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -53,10 +53,30 @@ PUBLIC_PATHS = {"/login", "/static", "/health"}
 # Deliberately an ALLOWLIST, not a blocklist: a new page added to the board
 # later is invisible to accounts until someone opts it in, so revenue can
 # never leak in by accident.
+# NOTE on /api: this used to be the bare prefix "/api", which quietly undid the
+# allowlist above — it opened /api/today (the commercial today-panel), /api/trend
+# (the revenue trend) and /api/notes (a general key/value store holding bank
+# details, tutor passcode hashes and student login codes) to the accounts login.
+# Only the two /api paths the accounts screens actually call are listed now:
+#   /api/search       — the Cmd-K palette in static/app.js, loaded on every page.
+#   /api/invoice-tags — the cash / bank-transfer tag popover on /admin/activity
+#                       (GET + POST; matching is on path only, so one entry
+#                       covers both methods).
+# /admin/activity.csv needs no entry of its own: the "/admin/activity" entry
+# already matches it via the `a + "."` rule in _accounts_allowed below.
 ACCOUNTS_PATHS = (
     "/admin/chase", "/admin/work", "/admin/activity", "/admin/transactions",
-    "/login", "/logout", "/health", "/static", "/api", "/_meta", "/admin/sync",
+    "/login", "/logout", "/health", "/static", "/_meta", "/admin/sync",
+    "/api/search", "/api/invoice-tags", "/export.csv",
 )
+
+# /export.csv is ONE route serving five tables, three of which are exactly the
+# commercial picture this allowlist exists to withhold (group + pathway prices
+# and spend, board_groups collected vs expected). The allowlist matches on path
+# only and cannot see ?table=, so the route is opened above and then restricted
+# by table in export_csv — otherwise fixing the Chase / To-do CSV buttons would
+# have handed accounts the revenue export along with them.
+ACCOUNTS_CSV_TABLES = frozenset({"chase", "admin_work"})
 
 def _accounts_allowed(path: str) -> bool:
     p = (path or "").split("?")[0]
@@ -94,19 +114,104 @@ def api_today(period: str = "S26"):
 def api_trend(period: str = "S26", days: int = 90):
     return {"period": period, "days": days, "points": queries.trend(period, days)}
 
+# ── /api/notes stream authorisation ──────────────────────────────────────────
+# The `notes` table is NOT just student notes — it is a general key/value store
+# that Image OS uses for real secrets: invprofiles holds bank/IBAN details,
+# tutorauth holds tutor passcode hashes, studentotp holds student login codes.
+# contact_id and stream were free-form parameters with no check, so any
+# authenticated session — the accounts login included — could read or overwrite
+# ANY stream. Access is now granted per stream, per role.
+#
+# Every Image OS caller logs in with IFT_FIN_PASS, which role_of() resolves to
+# "full", so the integration keeps full read/write on its own streams and is
+# unaffected by this change. Nothing anywhere uses the accounts passphrase
+# programmatically.
+#
+# FAIL CLOSED: the resolver below returns a role set per stream, and a role that
+# has not been opted in gets nothing. Adding a third role later means every
+# stream denies it until someone lists it explicitly.
+_FULL_ONLY = (frozenset({"full"}), frozenset({"full"}))  # (may read, may write)
+
+# Exact stream names. All are server-to-server Image OS state reached with the
+# full passphrase; none is reachable from an accounts screen.
+NOTE_STREAMS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "buildline":      _FULL_ONLY,  # Aaron's /line tracker + Image OS Build tab
+    "state":          _FULL_ONLY,  # portal state store
+    "invprofiles":    _FULL_ONLY,  # SENSITIVE — invoice profiles / bank details
+    "tutorauth":      _FULL_ONLY,  # SENSITIVE — tutor passcode hashes
+    "studentotp":     _FULL_ONLY,  # SENSITIVE — student login codes
+    "subcontractors": _FULL_ONLY,  # SENSITIVE — sealed via lib/field-crypto.js
+    "classgroups":    _FULL_ONLY,  # class groups (edu, graduation, cert-orders)
+    "cmarchive":      _FULL_ONLY,  # ClassMarker sync archive
+    "certready":      _FULL_ONLY,  # cert readiness store
+    "stripe-recon":   _FULL_ONLY,  # Stripe reconciliation log
+    "tesg:grants":    _FULL_ONLY,  # TESG grant records
+    "studios":        _FULL_ONLY,  # Momence studios
+    "attroster":      _FULL_ONLY,  # attendance roster cache
+    "attfees":        _FULL_ONLY,  # attendance fees cache
+    "attdone":        _FULL_ONLY,  # attendance results-done
+    "attexclude":     _FULL_ONLY,  # attendance exclusions
+    "attselfpaced":   _FULL_ONLY,  # attendance self-paced cache
+}
+
+# Unbounded namespaces — one stream per proposal and per document, so these can
+# only be matched by prefix.
+NOTE_STREAM_PREFIXES: tuple[tuple[str, tuple[frozenset[str], frozenset[str]]], ...] = (
+    ("prop:", _FULL_ONLY),  # lib/portal-proposals.js, one stream per proposal
+    ("doc:",  _FULL_ONLY),  # lib/portal-documents.js, one stream per document
+    ("docs:", _FULL_ONLY),  # docs:index
+)
+
+# Student notes written from /group carry the student's COURSE as the stream
+# (Pilates / PT / Reformer / …), an open-ended set driven by the Ontraport sync
+# that cannot be enumerated here. /group is a dashboard-only screen, so the
+# default is full-role-only too — which is what makes "unknown stream" safe to
+# fall through to: it denies accounts without breaking the notes UI.
+NOTE_STREAM_DEFAULT = _FULL_ONLY
+
+
+def _note_stream_roles(stream: str) -> tuple[frozenset[str], frozenset[str]]:
+    s = stream or ""
+    if s in NOTE_STREAMS:
+        return NOTE_STREAMS[s]
+    for prefix, roles in NOTE_STREAM_PREFIXES:
+        if s.startswith(prefix):
+            return roles
+    return NOTE_STREAM_DEFAULT
+
+
+def _deny_note(request: Request, stream: str, mode: str) -> None:
+    """Identical 404 for every refusal, so a denial never reveals whether the
+    stream exists, is registered, or holds anything."""
+    print(f"[notes] DENIED {mode} role={role_of(request)!r} stream={stream!r}", flush=True)
+    raise HTTPException(status_code=404, detail="Not found")
+
+
 @app.post("/api/notes")
-def api_notes_set(contact_id: str = Form(...), stream: str = Form(""), body: str = Form("")):
+def api_notes_set(request: Request, contact_id: str = Form(...),
+                  stream: str = Form(""), body: str = Form("")):
+    if role_of(request) not in _note_stream_roles(stream)[1]:
+        _deny_note(request, stream, "write")
     queries.set_note(contact_id, stream, body)
     return {"ok": True}
 
 @app.get("/api/notes")
-def api_notes_get(contact_id: str, stream: str = ""):
+def api_notes_get(request: Request, contact_id: str, stream: str = ""):
+    if role_of(request) not in _note_stream_roles(stream)[0]:
+        _deny_note(request, stream, "read")
     return {"body": queries.get_note(contact_id, stream)}
 
 @app.get("/export.csv")
-def export_csv(table: str, period: str = "S26", group_id: str | None = None,
-               pathway: str | None = None):
-    """CSV export. table = chase | admin_work | group | pathway | board_groups."""
+def export_csv(request: Request, table: str, period: str = "S26",
+               group_id: str | None = None, pathway: str | None = None):
+    """CSV export. table = chase | admin_work | group | pathway | board_groups.
+
+    The accounts login gets chase + admin_work only (ACCOUNTS_CSV_TABLES); the
+    other three tables are the commercial picture and redirect like any other
+    dashboard page would.
+    """
+    if role_of(request) == "accounts" and table not in ACCOUNTS_CSV_TABLES:
+        return RedirectResponse("/admin/chase", status_code=302)
     import csv, io
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -174,8 +279,21 @@ def admin_digest_send_now():
 
 @app.post("/admin/sync")
 def admin_sync_now(request: Request):
-    val, _ = get_meta("sync_running")
-    if val != "1":
+    # sync_running=1 is cleared in a finally, but a worker that gets
+    # OOM-killed or restarted mid-sync (seen on Render, 15 Sep 2026) leaves
+    # it set forever and every later trigger silently no-ops. Treat the
+    # flag as stale once it's older than any plausible sync.
+    val, set_at = get_meta("sync_running")
+    stale = False
+    if val == "1" and set_at:
+        from datetime import datetime as _dt, timedelta as _td
+        try:
+            stale = _dt.utcnow() - _dt.fromisoformat(str(set_at)[:19]) > _td(minutes=30)
+        except ValueError:
+            stale = True
+    if val != "1" or stale:
+        if stale:
+            print(f"sync_running flag stale (set {set_at}) — starting anyway", flush=True)
         Thread(target=_run_sync_threaded, daemon=True).start()
     referer = request.headers.get("referer") or "/board"
     return RedirectResponse(url=referer, status_code=303)
