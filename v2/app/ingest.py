@@ -73,7 +73,12 @@ def ingest_csv():
     print(f"loaded {len(rows)} students from {csv_path}")
 
     with get_db() as c:
-        c.execute("DELETE FROM students")
+        # Full refresh of LIVE rows only. Seeded historical rows (A25/S25
+        # imports) must survive the wipe so the ON CONFLICT guard below can
+        # refresh their `spent` and nothing else — a plain DELETE would drop
+        # them, and the re-insert from ONtraport's current fields would
+        # silently re-home them to whatever term those fields now describe.
+        c.execute("DELETE FROM students WHERE COALESCE(is_seeded, 0) = 0")
         ins = 0
         for r in rows:
             for stream, loc_c, qual_c, start_c, price_c, spent_c, plan_c, tt_c, method_c in COURSES:
@@ -135,17 +140,36 @@ def ingest_csv():
                         is_deferral, is_dropoff, is_grant, payment_status
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(contact_id, stream) DO UPDATE SET
-                        first_name=excluded.first_name, last_name=excluded.last_name,
-                        email=excluded.email, phone=excluded.phone,
-                        qualification=excluded.qualification, location=excluded.location,
-                        start_date=excluded.start_date, timetable=excluded.timetable,
-                        price=excluded.price, spent=excluded.spent,
-                        payment_plan=excluded.payment_plan, payment_method=excluded.payment_method,
-                        pathway=excluded.pathway,
-                        group_id=excluded.group_id, class_period=excluded.class_period,
-                        revenue_period=excluded.revenue_period,
-                        is_deferral=excluded.is_deferral, is_grant=excluded.is_grant,
-                        payment_status=excluded.payment_status
+                        -- Seeded historical rows (A25/S25 imports) keep their cohort
+                        -- fields: ONtraport's course fields get reused when a student
+                        -- re-enrols, so a live overwrite would silently move them out
+                        -- of the historical term. Only the money (spent) and the
+                        -- derived payment_status refresh — that is the live
+                        -- replacement for the sheet's phone-number SUMIFS.
+                        first_name     = CASE WHEN students.is_seeded=1 THEN students.first_name     ELSE excluded.first_name     END,
+                        last_name      = CASE WHEN students.is_seeded=1 THEN students.last_name      ELSE excluded.last_name      END,
+                        email          = CASE WHEN students.is_seeded=1 THEN students.email          ELSE excluded.email          END,
+                        phone          = CASE WHEN students.is_seeded=1 THEN students.phone          ELSE excluded.phone          END,
+                        qualification  = CASE WHEN students.is_seeded=1 THEN students.qualification  ELSE excluded.qualification  END,
+                        location       = CASE WHEN students.is_seeded=1 THEN students.location       ELSE excluded.location       END,
+                        start_date     = CASE WHEN students.is_seeded=1 THEN students.start_date     ELSE excluded.start_date     END,
+                        timetable      = CASE WHEN students.is_seeded=1 THEN students.timetable      ELSE excluded.timetable      END,
+                        price          = CASE WHEN students.is_seeded=1 THEN students.price          ELSE excluded.price          END,
+                        spent          = excluded.spent,
+                        payment_plan   = CASE WHEN students.is_seeded=1 THEN students.payment_plan   ELSE excluded.payment_plan   END,
+                        payment_method = CASE WHEN students.is_seeded=1 THEN students.payment_method ELSE excluded.payment_method END,
+                        pathway        = CASE WHEN students.is_seeded=1 THEN students.pathway        ELSE excluded.pathway        END,
+                        group_id       = CASE WHEN students.is_seeded=1 THEN students.group_id       ELSE excluded.group_id       END,
+                        class_period   = CASE WHEN students.is_seeded=1 THEN students.class_period   ELSE excluded.class_period   END,
+                        revenue_period = CASE WHEN students.is_seeded=1 THEN students.revenue_period ELSE excluded.revenue_period END,
+                        is_deferral    = CASE WHEN students.is_seeded=1 THEN students.is_deferral    ELSE excluded.is_deferral    END,
+                        is_grant       = CASE WHEN students.is_seeded=1 THEN students.is_grant       ELSE excluded.is_grant       END,
+                        payment_status = CASE WHEN students.is_seeded=1
+                                              THEN CASE WHEN students.price <= 0 THEN 'unpaid'
+                                                        WHEN excluded.spent >= students.price THEN 'paid'
+                                                        WHEN excluded.spent > 0 THEN 'partial'
+                                                        ELSE 'unpaid' END
+                                              ELSE excluded.payment_status END
                 """, (
                     r.get("Contact ID","").strip(),
                     first, last,
@@ -183,7 +207,7 @@ def import_period_seed(seed_path: Path | str, *, force_period: str | None = None
     period = force_period or seed.get("period") or ""
 
     init_db()
-    n_students, n_overrides = 0, 0
+    n_students, n_overrides, n_sb, n_snap = 0, 0, 0, 0
     with get_db() as c:
         for r in seed.get("students", []):
             qual     = r.get("qualification", "") or ""
@@ -193,11 +217,20 @@ def import_period_seed(seed_path: Path | str, *, force_period: str | None = None
                 location = "Online"
             start_iso = r.get("start_date", "") or ""
             start_d   = parse_date(start_iso) if start_iso else None
-            cls_period= period_for(start_d) if start_d else period
+            # Historical seed: every row sits in the seeded term regardless of
+            # start_date (cohorts that began before the term's nominal window —
+            # e.g. a Jun-2025 Swords intake that ran into A25 — are A25 in the
+            # workbook and must stay so). class_period tracks the workbook.
+            cls_period= period or (period_for(start_d) if start_d else "")
             # Seed override: revenue_period is the term we're seeding
             rev_period= period or cls_period
             if r.get("is_deferral"):
-                rev_period = ""  # money belongs to original term
+                # Money belongs to the origin term. The seed carries it when a
+                # '<term> … Sale' tag exists; otherwise blank, and the normal
+                # invoice-based backfill (backfill_deferral_periods) fills it.
+                rev_period = (r.get("revenue_period") or "")
+                if rev_period == period:
+                    rev_period = ""
             price = float(r.get("price", 0) or 0)
             spent = float(r.get("spent", 0) or 0)
             method = (r.get("payment_method", "") or "").strip() \
@@ -209,19 +242,24 @@ def import_period_seed(seed_path: Path | str, *, force_period: str | None = None
                     stream, qualification, location, start_date, timetable,
                     price, spent, payment_plan, payment_method, pathway,
                     group_id, class_period, revenue_period,
-                    is_deferral, is_dropoff, is_grant, payment_status
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    is_deferral, is_dropoff, is_grant, payment_status, is_seeded
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
                 ON CONFLICT(contact_id, stream) DO UPDATE SET
                     first_name=excluded.first_name, last_name=excluded.last_name,
                     email=excluded.email, phone=excluded.phone,
                     qualification=excluded.qualification, location=excluded.location,
                     start_date=excluded.start_date, timetable=excluded.timetable,
-                    price=excluded.price, spent=excluded.spent,
+                    price=excluded.price,
+                    -- First import takes the workbook's Paid; once the row is
+                    -- live (is_seeded=1) the sync owns `spent` and a re-import
+                    -- must not drag it back to the sheet's snapshot.
+                    spent=CASE WHEN students.is_seeded=1 THEN students.spent ELSE excluded.spent END,
                     payment_plan=excluded.payment_plan, payment_method=excluded.payment_method,
                     pathway=excluded.pathway, group_id=excluded.group_id,
                     class_period=excluded.class_period, revenue_period=excluded.revenue_period,
-                    is_deferral=excluded.is_deferral, is_grant=excluded.is_grant,
-                    payment_status=excluded.payment_status
+                    is_deferral=excluded.is_deferral, is_dropoff=excluded.is_dropoff,
+                    is_grant=excluded.is_grant,
+                    payment_status=excluded.payment_status, is_seeded=1
             """, (
                 r["contact_id"], r.get("first_name", ""), r.get("last_name", ""),
                 r.get("email", ""), r.get("phone", ""),
@@ -229,7 +267,8 @@ def import_period_seed(seed_path: Path | str, *, force_period: str | None = None
                 price, spent, plan, method,
                 pathway_for(qual, stream),
                 group_id(stream, location, start_iso), cls_period, rev_period,
-                int(r.get("is_deferral", 0)), 0, 1 if is_grant(plan) else 0,
+                int(r.get("is_deferral", 0)), int(r.get("is_dropoff", 0)),
+                1 if is_grant(plan) else 0,
                 derive_payment_status(price, spent),
             ))
             n_students += 1
@@ -250,9 +289,45 @@ def import_period_seed(seed_path: Path | str, *, force_period: str | None = None
                   o.get("contact_id", ""), "manual", "paid",
                   o.get("note", "")))
             n_overrides += 1
+
+        # Other-streams totals (Reformer / NutriCert / PPN / S&C / FBA /
+        # sponsored / grant) — the cells the workbook's DASHBOARD pulls by
+        # IMPORTRANGE. Stored as sales_board transactions so macro() /
+        # by_stream() treat them exactly like the live Sales Board does for
+        # S26. The static overlap rule still excludes tesg_grants from the
+        # headline, matching the sheet (grant is shown separately there too).
+        c.execute("""DELETE FROM transactions
+                     WHERE source='sales_board' AND period=?
+                       AND note LIKE '%Finance Report%'""", (period,))
+        for sb in seed.get("sales_board", []):
+            amt = float(sb.get("amount") or 0)
+            if amt <= 0: continue
+            c.execute("""
+                INSERT INTO transactions
+                    (date, period, direction, category, subcategory, amount,
+                     contact_id, source, status, note)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (seed.get("as_of") or "2026-07-29", period, "in", sb["category"], "",
+                  amt, "", "sales_board", "paid",
+                  f"Imported from {period} Finance Report · {sb.get('label', sb['category'])}"))
+            n_sb += 1
+
+        # Monthly 'what & when has money come in' points → trend line.
+        for s in seed.get("snapshots", []):
+            c.execute("""
+                INSERT INTO snapshots (snapshot_date, period, sales_count, revenue)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(snapshot_date, period) DO UPDATE SET
+                    sales_count = excluded.sales_count,
+                    revenue     = excluded.revenue,
+                    created_at  = datetime('now')
+            """, (s["date"], period, int(s.get("sales") or 0), float(s.get("revenue") or 0)))
+            n_snap += 1
     return {"ok": True, "period": period,
             "students_upserted": n_students,
-            "method_overrides_loaded": n_overrides}
+            "method_overrides_loaded": n_overrides,
+            "sales_board_rows": n_sb,
+            "snapshots": n_snap}
 
 
 if __name__ == "__main__":

@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS students (
     payment_status TEXT,                  -- paid | partial | collections | declined | unpaid
     cert_issued INTEGER DEFAULT 0,        -- manual tick: physical cert handed over
     cert_issued_at TEXT,
+    is_seeded INTEGER DEFAULT 0,          -- row came from a historical-term seed (A25/S25):
+                                          -- the live sync may refresh `spent` only, never
+                                          -- location / start / price / period
     UNIQUE(contact_id, stream)
 );
 
@@ -236,6 +239,7 @@ CATEGORY_STREAM = {
     "advanced_programming":  "Advanced Programming",
     "online_pilates":        "Online Pilates",
     "tesg_grants":           "Grants (TESG)",
+    "sponsored":             "Sponsored",     # employer / gym-paid places (LIFE, K67 Pillo) — A25 import
 }
 
 def normalize_location(loc: str) -> str:
@@ -291,6 +295,9 @@ def init_db():
         if "invoice_id" not in existing_tx:
             c.execute("ALTER TABLE transactions ADD COLUMN invoice_id INTEGER")
             c.execute("CREATE INDEX IF NOT EXISTS ix_tx_invoice ON transactions(invoice_id)")
+        existing_st = {r["name"] for r in c.execute("PRAGMA table_info(students)").fetchall()}
+        if "is_seeded" not in existing_st:
+            c.execute("ALTER TABLE students ADD COLUMN is_seeded INTEGER DEFAULT 0")
 
 def extract_origin_period(text: str | None) -> str:
     """Pull a term marker (S25 / A25 / S26 / A26 …) out of any string.

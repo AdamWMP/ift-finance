@@ -8,3 +8,9 @@ __pycache__/
 .venvs/
 v2/app/ift_finance.db
 v2/tabs/
+*.bak-*
+
+# Historical finance workbooks + per-student reconciliation exports — personal data, never commit
+A25 Finance Report.xlsx
+S25 Finance Report.xlsx
+*import — per-student delta.csv

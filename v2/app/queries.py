@@ -1490,11 +1490,16 @@ def backfill_deferral_periods() -> dict:
         """).fetchall()
     for r in rows:
         with get_db() as c:
+            # Earliest PLAUSIBLE paid invoice. ONtraport leaves closed_date at
+            # the Unix epoch on some records; without the floor MIN() picks
+            # 1970-01-01 and period_for() hands back "A69" (seen on contact
+            # 35623, 2 Oct 2026).
             inv = c.execute("""
                 SELECT MIN(COALESCE(closed_date, invoice_date, '')) AS d
                 FROM invoices
                 WHERE contact_id=? AND status_code=1
                   AND COALESCE(total_paid,0) >= ?
+                  AND COALESCE(closed_date, invoice_date, '') >= '2015-01-01'
             """, (r["contact_id"], MIN_DEFERRAL_INVOICE)).fetchone()
         if not inv or not inv["d"]:
             stats["no_invoice"] += 1
@@ -1504,14 +1509,21 @@ def backfill_deferral_periods() -> dict:
         except (ValueError, TypeError):
             stats["no_invoice"] += 1
             continue
+        if d.year < 2015:
+            stats["no_invoice"] += 1
+            continue
         origin = period_for(d)
         if not origin:
             stats["no_invoice"] += 1
             continue
         if origin != r["revenue_period"]:
             with get_db() as c:
+                # Seeded rows: only fill a blank origin — the workbook's
+                # explicit origin term wins over the invoice-derived one.
                 c.execute("""UPDATE students SET revenue_period = ?
-                             WHERE contact_id=? AND stream=?""",
+                             WHERE contact_id=? AND stream=?
+                               AND (COALESCE(is_seeded, 0) = 0
+                                    OR COALESCE(revenue_period, '') = '')""",
                           (origin, r["contact_id"], r["stream"]))
             stats["updated"] += 1
         else:
@@ -1563,7 +1575,7 @@ def backfill_followon_periods() -> dict:
                 p = period_for(date.fromisoformat(start_d[:10])) if start_d[:10] else ""
                 if p:
                     c.execute("UPDATE students SET revenue_period=?, class_period=? "
-                              "WHERE contact_id=? AND stream=?",
+                              "WHERE contact_id=? AND stream=? AND COALESCE(is_seeded,0)=0",
                               (p, p, cid, r["stream"]))
                     stats["assigned"] += 1
                     continue
@@ -1583,14 +1595,14 @@ def backfill_followon_periods() -> dict:
                         p = ""
                     if p:
                         c.execute("UPDATE students SET revenue_period=?, class_period=COALESCE(NULLIF(class_period,''),?) "
-                                  "WHERE contact_id=? AND stream=?",
+                                  "WHERE contact_id=? AND stream=? AND COALESCE(is_seeded,0)=0",
                                   (p, p, cid, r["stream"]))
                         stats["assigned"] += 1
                         continue
             # Fallback: potential sale → current term
             if today_period:
                 c.execute("UPDATE students SET revenue_period=?, class_period=COALESCE(NULLIF(class_period,''),?) "
-                          "WHERE contact_id=? AND stream=?",
+                          "WHERE contact_id=? AND stream=? AND COALESCE(is_seeded,0)=0",
                           (today_period, today_period, cid, r["stream"]))
                 stats["fallback_today"] += 1
             else:

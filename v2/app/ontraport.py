@@ -58,11 +58,19 @@ def fetch_invoices_for_contacts(contact_ids: list[str]) -> list[dict]:
         start, sub = 0, []
         while True:
             t0 = time.time()
-            r = requests.get(f"{OP_BASE}/objects",
-                             params={"objectID": INVOICE_OBJECT_ID, "range": PAGE,
-                                     "start": start, "condition": cond},
-                             headers=HEADERS, timeout=30)
+            # Backoff on 429 — this step runs right after ~1,000 tag calls
+            # and was the first casualty of a rate-limit burst (2 Oct 2026).
+            for attempt in range(5):
+                r = requests.get(f"{OP_BASE}/objects",
+                                 params={"objectID": INVOICE_OBJECT_ID, "range": PAGE,
+                                         "start": start, "condition": cond},
+                                 headers=HEADERS, timeout=30)
+                if r.status_code == 429:
+                    time.sleep(2 ** attempt)
+                    continue
+                break
             r.raise_for_status()
+            time.sleep(0.3)
             rows = r.json().get("data", [])
             dt = time.time() - t0
             print(f"  chunk {ci}/{len(chunks)} start={start:>3}  +{len(rows):>2} rows ({dt:.1f}s)", flush=True)
@@ -269,11 +277,15 @@ def discover_s26_contact_ids() -> list[str]:
     cells only, which avoids both double-counting and old-term contact leak.
     """
     ids: set[str] = set()
-    # PT — still identified via Year dropdown
-    _discover_by_condition(
-        {"field": {"field": "f2288"}, "op": "=", "value": {"value": "586"}},
-        "f2288=586 (PT 2026)", ids,
-    )
+    # PT — still identified via Year dropdown. 2025 is included so the
+    # seeded A25 rows get their `spent` refreshed every sync (the live
+    # replacement for the A25 workbook's phone-number SUMIFS); the ingest
+    # guard on is_seeded means nothing else on those rows is touched.
+    for value, label in (("586", "PT 2026"), ("543", "PT 2025")):
+        _discover_by_condition(
+            {"field": {"field": "f2288"}, "op": "=", "value": {"value": value}},
+            f"f2288={value} ({label})", ids,
+        )
     # Pilates — fallback to Start Date populated
     _discover_by_condition(
         {"field": {"field": "f2305"}, "op": ">", "value": {"value": "0"}},
@@ -377,24 +389,40 @@ def fetch_contact_tag_map(contact_ids: list[str]) -> dict[str, list[int]]:
     """For each contact_id, list of tag IDs they're tagged with.
     Uses the Contact's `contact_cat` field, which contains a comma-list
     of tag IDs (ONtraport convention)."""
-    out: dict[str, list[int]] = {}
-    for cid in contact_ids:
+    import time as _time
+    out: dict[str, list[int]] = {cid: [] for cid in contact_ids}
+
+    def _parse(raw: str) -> list[int]:
+        raw = (raw or "").strip().strip("*/")
+        if not raw: return []
+        ids = []
+        for tok in raw.replace("*/*", ",").split(","):
+            tok = tok.strip().strip("*").strip("/")
+            if tok.isdigit(): ids.append(int(tok))
+        return ids
+
+    # Batched: the /objects?ids= endpoint returns contact_cat for up to 50
+    # contacts per call, so ~1,000 contacts is ~20 requests instead of
+    # ~1,000. (The per-contact /object loop this replaced was the source
+    # of the 429 storms that starved the invoice step — 2 Oct 2026.)
+    for i in range(0, len(contact_ids), 50):
+        chunk = contact_ids[i:i + 50]
         try:
-            r = requests.get(f"{OP_BASE}/object",
-                             params={"objectID": 0, "id": cid},
-                             headers=HEADERS, timeout=30)
+            for attempt in range(5):
+                r = requests.get(f"{OP_BASE}/objects",
+                                 params={"objectID": 0, "ids": ",".join(chunk),
+                                         "listFields": "id,contact_cat"},
+                                 headers=HEADERS, timeout=30)
+                if r.status_code == 429:
+                    _time.sleep(2 ** attempt)
+                    continue
+                break
             r.raise_for_status()
-            data = r.json().get("data", {}) or {}
-            raw = (data.get("contact_cat") or "").strip().strip("*/")
-            if not raw: out[cid] = []; continue
-            ids = []
-            for tok in raw.replace("*/*", ",").split(","):
-                tok = tok.strip().strip("*").strip("/")
-                if tok.isdigit(): ids.append(int(tok))
-            out[cid] = ids
+            for c in r.json().get("data", []) or []:
+                out[str(c.get("id") or "")] = _parse(c.get("contact_cat"))
         except Exception as e:
-            print(f"  tag fetch failed for {cid}: {e}", flush=True)
-            out[cid] = []
+            print(f"  tag fetch failed for batch {i}-{i + len(chunk)}: {e}", flush=True)
+        _time.sleep(0.3)
     return out
 
 def fetch_contact_diagnostics(contact_ids: list[str]) -> list[dict]:
@@ -482,20 +510,27 @@ def apply_tags() -> dict:
             counts["dropoff"]  += is_dropoff
             counts["deferral"] += is_deferral
             counts["grant"]    += is_grant
+            # Seeded historical rows (A25/S25 imports) carry the flags the
+            # workbook defined for that term; ONtraport's tags describe the
+            # contact's CURRENT state and must not overwrite them.
             c.execute("""
                 UPDATE students
                 SET is_dropoff = ?,
                     is_deferral = MAX(is_deferral, ?),
                     is_grant   = MAX(is_grant, ?)
-                WHERE contact_id = ?
+                WHERE contact_id = ? AND COALESCE(is_seeded, 0) = 0
             """, (is_dropoff, is_deferral, is_grant, cid))
             # Anchor revenue_period to the origin term (where the sale was
             # actually made). Only when we know it — leave existing value
-            # alone if the deferral tag has no term marker.
+            # alone if the deferral tag has no term marker. On seeded rows
+            # the only permitted write is filling a blank origin on a row
+            # the seed already marked as a deferral.
             if is_deferral and origin_period:
                 c.execute("""
                     UPDATE students SET revenue_period = ?
                     WHERE contact_id = ? AND revenue_period != ?
+                      AND (COALESCE(is_seeded, 0) = 0
+                           OR (is_deferral = 1 AND COALESCE(revenue_period, '') = ''))
                 """, (origin_period, cid, origin_period))
     print("tags applied:", counts, flush=True)
     return counts

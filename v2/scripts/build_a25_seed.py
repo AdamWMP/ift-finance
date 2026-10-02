@@ -1,12 +1,36 @@
-"""Read the A25 Finance Report.xlsx and emit v2/app/a25_seed.json — a static
-seed of A25 student rows for the dashboard.
+"""Build v2/app/a25_seed.json from the A25 Finance Report workbook.
+
+Reads the Google-Sheets export (File → Download → .xlsx) and emits a seed
+that /admin/import-a25 loads. Everything the DASHBOARD tab derives is
+rebuilt from the per-student rows so the import reproduces the sheet's
+headline to the cent — the build asserts this and refuses to write the
+seed if any cohort tab's Σ(Fees Due / Paid) drifts from its R2/R3 cells.
 
 Usage:
-    python -m scripts.build_a25_seed \
-        "/path/to/A25 Finance Report.xlsx" v2/app/a25_seed.json
+    cd v2
+    python -m scripts.build_a25_seed "../A25 Finance Report.xlsx"
 
-The JSON is consumed by /admin/import-a25 on the dashboard. Re-running this
-script regenerates the seed; committing the JSON makes it shippable.
+What's captured
+    students         every row of the 7 PT cohort tabs + Pilates, with
+                     location / timetable / start date so cohorts split up
+                     the same way S26 / A26 do
+    is_deferral      the 14 rows on 'A25 Deferals ' — their money belongs to
+                     the origin term (parsed from the '<term> … Sale' tag);
+                     revenue_period is left blank when no origin tag exists
+                     so the normal invoice-based backfill can fill it
+    is_dropoff       the DASHBOARD drop-off block (D37:I75)
+    method_overrides CASH PAYMENTS / BANK TRANSFER / Skillnet / Revolut tabs
+    sales_board      the other-streams cells the DASHBOARD pulls by
+                     IMPORTRANGE (Reformer / FBA / NutriCert / PPN / S&C /
+                     sponsored / grant)
+    snapshots        the 'What & When Has Money Come In' monthly points
+
+Sheet quirks handled
+    • B4 'TOTAL FEES OWED' double-adds NutriCert+PPN+S&C+grant; B6 'COMBO
+      FEES DUE' points at Wexford!R3. Adam opted for the corrected figures
+      (2 Oct 2026) — the seed carries due/paid only and owed is derived.
+    • Two deferral rows have a date in the Location column; the cohort-tab
+      row is authoritative for location, the deferral tab only for the flag.
 """
 from __future__ import annotations
 import json, re, sys
@@ -18,248 +42,214 @@ try:
 except ImportError:
     sys.exit("openpyxl is required — `pip install openpyxl` in your venv first")
 
-# Per-location PT cohorts — each tab is a cohort of PT-stream students at
-# the named location. "Belfast  Online" (sic — trailing double space in the
-# real workbook) is the online cohort.
-PT_COHORT_SHEETS = [
-    "Swords", "Tallaght", "Cork", "Galway", "Limerick", "Wexford",
-    "Belfast  Online",
-]
-PILATES_SHEET = "Pilates"
-DEFERRAL_SHEET = "A25 Deferals "  # sic — trailing space in the real workbook
-
-# Payment-method override sheets — manual transactions that reallocate the
-# default-method bucket on the dashboard.
-METHOD_OVERRIDE_SHEETS = {
-    "CASH PAYMENTS": "Cash",
-    "Revolut":       "Revolut",
+PT_COHORT_SHEETS = ["Swords", "Tallaght", "Cork", "Galway", "Limerick", "Wexford", "Belfast  Online"]
+PILATES_SHEET    = "Pilates"
+DEFERRAL_SHEET   = "A25 Deferals "          # sic — trailing space in the workbook
+DASHBOARD_SHEET  = "DASHBOARD"
+METHOD_SHEETS    = {"CASH PAYMENTS": "Cash", "BANK TRANSFER": "Bank Transfer",
+                    "Skillnet": "Skillnet", "Revolut": "Revolut"}
+# DASHBOARD cells → sales_board category (keys match db.CATEGORY_STREAM)
+SB_CELLS = {
+    "H27": ("reformer",       "Reformer Pilates"),
+    "H28": ("fba",            "FBA"),
+    "H29": ("nutricert",      "NutriCert"),
+    "H30": ("pre_post_natal", "PPN"),
+    "H31": ("sc_dublin",      "S&C"),
+    "H18": ("sponsored",      "Sponsored (LIFE / K67 Pillo)"),
+    "H32": ("tesg_grants",    "Grant paid"),      # excluded from headline, shown separately
 }
-
-# Column lookup — headers vary slightly between sheet types. We resolve by
-# matching the header text, stripping surrounding whitespace.
-def _col_map(ws) -> dict[str, int]:
-    return {(c.value or "").strip(): i for i, c in enumerate(ws[1]) if c.value}
+SNAPSHOT_YEAR = 2026   # A25 ran Sep 2025 → Jul 2026; the monthly points are Jan–Jul 2026
 
 
-def _val(row, col_map, key, default=""):
-    idx = col_map.get(key)
-    if idx is None:
-        return default
-    v = row[idx]
-    return v if v is not None else default
+def _num(v) -> float:
+    try: return float(v or 0)
+    except (TypeError, ValueError): return 0.0
 
-
-def _parse_date_any(v) -> str:
-    """Excel cells can hold either a datetime or a string. Return ISO yyyy-mm-dd
-    or empty string."""
-    if v is None or v == "":
-        return ""
-    if isinstance(v, datetime):
-        return v.date().isoformat()
+def _iso(v) -> str:
+    if v in (None, ""): return ""
+    if isinstance(v, datetime): return v.date().isoformat()
     s = str(v).strip()
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%-m-%Y"):
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            continue
-    # Try numeric-only flex (single-digit day or month)
-    m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", s)
-    if m:
-        d, mo, y = m.groups()
-        try:
-            return datetime(int(y), int(mo), int(d)).date().isoformat()
-        except ValueError:
-            return ""
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try: return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError: pass
     return ""
 
+def _phone(v) -> str:
+    if v in (None, ""): return ""
+    s = str(v).strip()
+    if s.endswith(".0"): s = s[:-2]
+    return "".join(ch for ch in s if ch.isdigit())
 
-def _parse_amount(v) -> float:
-    """Lenient float parse. 'Deferral' / blank / strings → 0.0."""
-    if v in (None, "", "Deferral"):
-        return 0.0
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        s = str(v).replace(",", "").replace("€", "").strip()
+def _cid(v) -> str:
+    if isinstance(v, float) and v.is_integer(): return str(int(v))
+    return str(v).strip()
+
+def _split_name(full: str) -> tuple[str, str]:
+    parts = (full or "").strip().split()
+    if not parts: return "", ""
+    if len(parts) == 1: return parts[0], ""
+    return " ".join(parts[:-1]), parts[-1]
+
+_TERM = re.compile(r"\b([SA]\d{2})\b")
+def _origin_from_tags(tags: str, exclude: str) -> str:
+    """Latest '<term> … Sale' tag that isn't the seeded term."""
+    found = []
+    for t in (tags or "").split(","):
+        t = t.strip()
+        if "Sale" not in t or "Defer" in t: continue
+        m = _TERM.search(t)
+        if m and m.group(1) != exclude:
+            yy = int(m.group(1)[1:]); found.append(((yy, 0 if m.group(1)[0] == "S" else 1), m.group(1)))
+    return max(found)[1] if found else ""
+
+
+def build(xlsx: Path) -> dict:
+    wb = openpyxl.load_workbook(xlsx, data_only=True)
+    period = "A25"
+    students: dict[str, dict] = {}
+    tab_check = []
+
+    def take(ws, tab, stream, cols):
+        """cols: dict of field → 1-based column index for this tab layout."""
+        due = paid = 0.0; n = 0
+        for r in range(2, ws.max_row + 1):
+            raw = ws.cell(r, 1).value
+            if raw in (None, ""): continue
+            cid = _cid(raw)
+            price = _num(ws.cell(r, cols["price"]).value)
+            spent = _num(ws.cell(r, cols["paid"]).value)
+            first, last = _split_name(ws.cell(r, 2).value)
+            row = dict(
+                contact_id=cid, first_name=first, last_name=last,
+                email=(ws.cell(r, 3).value or "").strip(), phone=_phone(ws.cell(r, 4).value),
+                stream=stream,
+                qualification=(ws.cell(r, cols["qual"]).value or "").strip() if cols.get("qual") else "",
+                location=(ws.cell(r, cols["loc"]).value or "").strip(),
+                timetable=(ws.cell(r, cols["tt"]).value or "").strip() if cols.get("tt") else "",
+                start_date=_iso(ws.cell(r, cols["start"]).value),
+                price=price, spent=spent,
+                payment_plan=str(ws.cell(r, cols["plan"]).value or "").strip(),
+                payment_method=(ws.cell(r, cols["method"]).value or "").strip(),
+                tags=(ws.cell(r, cols["tags"]).value or "").strip(),
+                is_deferral=0, revenue_period=period, is_dropoff=0, cohort_tab=tab,
+            )
+            key = f"{cid}|{stream}"
+            if key in students:
+                print(f"  ! duplicate {key} ({tab}) — keeping first", file=sys.stderr)
+                continue
+            students[key] = row; due += price; paid += spent; n += 1
+        r2, r3 = _num(ws["R2"].value), _num(ws["R3"].value)
+        ok = abs(due - r2) < 0.01 and abs(paid - r3) < 0.01
+        tab_check.append((tab, n, due, paid, r2, r3, ok))
+        if not ok:
+            sys.exit(f"ABORT: {tab} Σrows due/paid {due:,.2f}/{paid:,.2f} ≠ R2/R3 {r2:,.2f}/{r3:,.2f}")
+
+    pt_cols = dict(qual=5, loc=6, tt=7, start=8, price=9, paid=10, plan=12, method=14, tags=15)
+    for tab in PT_COHORT_SHEETS:
+        take(wb[tab], tab, "PT", pt_cols)
+    take(wb[PILATES_SHEET], PILATES_SHEET, "Pilates",
+         dict(loc=5, start=6, price=7, paid=8, plan=10, method=11, tags=12))
+
+    # Deferrals — flag + origin term; money + location come from the cohort row.
+    ws = wb[DEFERRAL_SHEET]; deferrals = []
+    for r in range(2, ws.max_row + 1):
+        raw = ws.cell(r, 1).value
+        if raw in (None, ""): continue
+        cid = _cid(raw); tags = (ws.cell(r, 15).value or "")
+        origin = _origin_from_tags(tags, period)
+        hit = [k for k in students if k.startswith(cid + "|")]
+        for k in hit:
+            s = students[k]
+            s["is_deferral"] = 1
+            s["revenue_period"] = origin           # '' → backfill_deferral_periods fills from invoices
+            # cohort row is zeroed in the sheet; carry the true money from the deferral tab
+            s["price"] = _num(ws.cell(r, 9).value) or s["price"]
+            s["spent"] = _num(ws.cell(r, 10).value)
+        deferrals.append(dict(contact_id=cid, name=ws.cell(r, 2).value, origin=origin,
+                              in_cohort=bool(hit)))
+
+    # Drop-offs — DASHBOARD block D37:I75
+    D = wb[DASHBOARD_SHEET]; drops = []
+    for r in range(37, 80):
+        raw = D.cell(r, 4).value
+        if raw in (None, ""): continue
+        cid = _cid(raw)
+        hit = [k for k in students if k.startswith(cid + "|")]
+        for k in hit: students[k]["is_dropoff"] = 1
+        drops.append(dict(contact_id=cid, name=D.cell(r, 5).value,
+                          potential=_num(D.cell(r, 7).value), spent=_num(D.cell(r, 8).value),
+                          lost=_num(D.cell(r, 9).value), in_cohort=bool(hit)))
+
+    # Method overrides
+    overrides = []
+    for sheet, method in METHOD_SHEETS.items():
+        ws = wb[sheet]
+        for r in range(2, ws.max_row + 1):
+            raw = ws.cell(r, 1).value
+            if raw in (None, ""): continue
+            amt = _num(ws.cell(r, 10).value)
+            if amt <= 0: continue
+            overrides.append(dict(contact_id=_cid(raw), amount=amt, method=method,
+                                  date="2025-09-01", note=f"Imported from A25 Finance Report · {method}"))
+
+    # Other streams (cached IMPORTRANGE values on the DASHBOARD)
+    sales_board = [dict(category=cat, label=label, amount=_num(D[cell].value))
+                   for cell, (cat, label) in SB_CELLS.items() if _num(D[cell].value) > 0]
+    grant_potential = _num(D["F32"].value)
+
+    # Monthly snapshots — I11:K17, labels like '29th January'
+    snaps = []
+    for r in range(11, 18):
+        lab = D.cell(r, 9).value
+        if not lab: continue
+        m = re.match(r"(\d+)\w*\s+(\w+)", str(lab))
+        if not m: continue
         try:
-            return float(s)
-        except ValueError:
-            return 0.0
+            d = datetime.strptime(f"{m.group(1)} {m.group(2)} {SNAPSHOT_YEAR}", "%d %B %Y").date()
+        except ValueError: continue
+        sales = _num(re.sub(r"[^\d.]", "", str(D.cell(r, 10).value or "")))
+        snaps.append(dict(date=d.isoformat(), sales=int(round(sales)), revenue=_num(D.cell(r, 11).value)))
+
+    rows = sorted(students.values(), key=lambda s: (s["stream"], s["location"], s["start_date"], s["last_name"]))
+    sb_headline = sum(x["amount"] for x in sales_board if x["category"] != "tesg_grants")
+    due_all  = sum(s["price"] for s in rows if not s["is_deferral"])
+    paid_all = sum(s["spent"] for s in rows if not s["is_deferral"])
+    drop_pot = sum(s["price"] for s in rows if s["is_dropoff"] and not s["is_deferral"])
+    stats = dict(
+        student_count=len(rows), deferral_count=sum(s["is_deferral"] for s in rows),
+        dropoff_count=sum(s["is_dropoff"] for s in rows),
+        method_override_count=len(overrides),
+        sheet_total_due=round(_num(D["B2"].value), 2), sheet_total_paid=round(_num(D["B3"].value), 2),
+        rebuilt_total_due=round(due_all + sb_headline, 2), rebuilt_total_paid=round(paid_all + sb_headline, 2),
+        rebuilt_owed=round(due_all - paid_all, 2),
+        rebuilt_due_excl_dropoffs=round(due_all - drop_pot + sb_headline, 2),
+        dropoff_potential=round(drop_pot, 2), dropoff_lost=round(sum(x["lost"] for x in drops), 2),
+        grant_potential=grant_potential,
+        tab_check=[dict(tab=t, n=n, due=d, paid=p, ok=ok) for t, n, d, p, _, _, ok in tab_check],
+    )
+    return dict(period=period, source=str(xlsx.name), built_at=datetime.now().isoformat(timespec="seconds"),
+                students=rows, method_overrides=overrides, sales_board=sales_board,
+                snapshots=snaps, deferrals=deferrals, drop_offs=drops, stats=stats)
 
 
-def _stream_from_qual(qual: str, default: str = "PT") -> str:
-    q = (qual or "").lower()
-    if "pilates" in q or "reformer" in q:
-        return "Pilates"
-    return default
-
-
-def _safe_id(v) -> str:
-    """Contact IDs in the workbook are usually floats. Render them as digits-only."""
-    if v in (None, ""):
-        return ""
-    s = str(v).strip()
-    # Floats like '37906.0' → '37906'
-    if s.endswith(".0"):
-        s = s[:-2]
-    return s
-
-
-def _safe_phone(v) -> str:
-    if v in (None, ""):
-        return ""
-    s = str(v).strip()
-    if s.endswith(".0"):
-        s = s[:-2]
-    # Most are stored without the "+" prefix
-    if s.isdigit():
-        return f"+{s}"
-    return s
-
-
-def _safe_name(v) -> tuple[str, str]:
-    """Best-effort first/last split from the Name column."""
-    s = (v or "").strip()
-    if not s:
-        return "", ""
-    # Strip a trailing email parenthetical: "Name (name@example.com)"
-    s = re.sub(r"\s*\([^)]*@[^)]*\)\s*$", "", s).strip()
-    parts = s.split()
-    if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], " ".join(parts[1:])
-
-
-def _process_cohort_sheet(ws, default_stream: str, is_deferral: bool = False) -> list[dict]:
-    cmap = _col_map(ws)
-    out = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        contact_id = _safe_id(_val(row, cmap, "Contact ID"))
-        if not contact_id:
-            continue
-        name = _val(row, cmap, "Name", "")
-        first, last = _safe_name(name)
-        email = (_val(row, cmap, "Email", "") or "").strip()
-        phone = _safe_phone(_val(row, cmap, "SMS Number"))
-        # Sheet shape varies — Pilates has Pilates-specific column names
-        qual = _val(row, cmap, " Qualifications") or _val(row, cmap, "Qualifications") or ""
-        if not qual and "Pilates Course Location" in cmap:
-            qual = "Pilates Course (EQF Level 4)"
-        location = (_val(row, cmap, " Location") or _val(row, cmap, "Pilates Course Location") or "").strip()
-        timetable = (_val(row, cmap, " Timetable") or "").strip()
-        start_iso = _parse_date_any(
-            _val(row, cmap, " Start Date") or _val(row, cmap, "Pilates Course Start Date")
-        )
-        price = _parse_amount(_val(row, cmap, "Fees Due"))
-        spent = _parse_amount(_val(row, cmap, "Paid"))
-        plan  = (_val(row, cmap, " Payment Plan") or _val(row, cmap, "Pilates Course Payment Plan") or "").strip()
-        method = (_val(row, cmap, "Payment Method") or "").strip()
-        stream = _stream_from_qual(str(qual), default=default_stream)
-        out.append({
-            "contact_id":   contact_id,
-            "first_name":   first,
-            "last_name":    last,
-            "email":        email,
-            "phone":        phone,
-            "stream":       stream,
-            "qualification": str(qual).strip(),
-            "location":     location,
-            "timetable":    timetable,
-            "start_date":   start_iso,
-            "price":        price,
-            "spent":        spent,
-            "payment_plan": plan,
-            "payment_method": method,
-            "is_deferral":  1 if is_deferral else 0,
-        })
-    return out
-
-
-def _process_method_overrides(ws, method: str) -> list[dict]:
-    """Sheets like CASH / Revolut list per-contact amounts. Emit one manual
-    transaction per contact tagged to that method."""
-    cmap = _col_map(ws)
-    out = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        contact_id = _safe_id(_val(row, cmap, "Contact ID"))
-        if not contact_id:
-            continue
-        amount = _parse_amount(_val(row, cmap, "Paid"))
-        if amount <= 0:
-            continue
-        d = _parse_date_any(_val(row, cmap, " Start Date") or "")
-        out.append({
-            "contact_id": contact_id,
-            "amount":     amount,
-            "method":     method,
-            "date":       d or "2025-09-01",
-            "note":       f"Imported from A25 Finance Report · {method}",
-        })
-    return out
-
-
-def build(xlsx_path: Path) -> dict:
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
-    students: list[dict] = []
-    for s in PT_COHORT_SHEETS:
-        if s not in wb.sheetnames:
-            print(f"  ! sheet missing: {s!r}", file=sys.stderr)
-            continue
-        rows = _process_cohort_sheet(wb[s], default_stream="PT")
-        students.extend(rows)
-        print(f"  {s}: {len(rows)} students", file=sys.stderr)
-    rows = _process_cohort_sheet(wb[PILATES_SHEET], default_stream="Pilates")
-    students.extend(rows)
-    print(f"  {PILATES_SHEET}: {len(rows)} students", file=sys.stderr)
-    if DEFERRAL_SHEET in wb.sheetnames:
-        rows = _process_cohort_sheet(wb[DEFERRAL_SHEET], default_stream="PT", is_deferral=True)
-        students.extend(rows)
-        print(f"  {DEFERRAL_SHEET}: {len(rows)} deferrals", file=sys.stderr)
-
-    # Dedupe — a contact can appear in multiple sheets (e.g. an attended cohort
-    # plus a deferral list). Keep the highest-paid row per (contact_id, stream).
-    seen: dict[tuple[str, str], dict] = {}
-    for r in students:
-        key = (r["contact_id"], r["stream"])
-        prev = seen.get(key)
-        if prev is None or r["spent"] > prev["spent"]:
-            seen[key] = r
-    students = sorted(seen.values(), key=lambda r: (r["stream"], r["location"], r["start_date"], r["last_name"]))
-
-    method_overrides: list[dict] = []
-    for sheet_name, method in METHOD_OVERRIDE_SHEETS.items():
-        if sheet_name not in wb.sheetnames:
-            continue
-        rows = _process_method_overrides(wb[sheet_name], method)
-        method_overrides.extend(rows)
-        print(f"  {sheet_name} → method={method}: {len(rows)} entries", file=sys.stderr)
-
-    return {
-        "period":   "A25",
-        "students": students,
-        "method_overrides": method_overrides,
-        "stats": {
-            "student_count": len(students),
-            "method_override_count": len(method_overrides),
-        },
-    }
-
-
-def main() -> int:
-    if len(sys.argv) < 3:
-        print(__doc__, file=sys.stderr); return 2
-    src = Path(sys.argv[1])
-    dst = Path(sys.argv[2])
-    if not src.exists():
-        print(f"source file not found: {src}", file=sys.stderr); return 1
-    seed = build(src)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(json.dumps(seed, indent=2, default=str))
-    print(f"\n✓ wrote {dst}", file=sys.stderr)
-    print(f"  students: {len(seed['students'])}", file=sys.stderr)
-    print(f"  method overrides: {len(seed['method_overrides'])}", file=sys.stderr)
-    return 0
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    xlsx = Path(sys.argv[1]).expanduser()
+    out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve().parent.parent / "app" / "a25_seed.json"
+    seed = build(xlsx)
+    st = seed["stats"]
+    for t in st["tab_check"]:
+        print(f"  {t['tab']:16s} n={t['n']:3d} due={t['due']:>11,.2f} paid={t['paid']:>11,.2f} {'✓' if t['ok'] else '✗'}")
+    print(f"  students={st['student_count']} deferrals={st['deferral_count']} dropoffs={st['dropoff_count']} overrides={st['method_override_count']}")
+    print(f"  TOTAL DUE  sheet {st['sheet_total_due']:,.2f}  rebuilt {st['rebuilt_total_due']:,.2f}  {'✓' if abs(st['sheet_total_due']-st['rebuilt_total_due'])<0.01 else '✗'}")
+    print(f"  TOTAL PAID sheet {st['sheet_total_paid']:,.2f}  rebuilt {st['rebuilt_total_paid']:,.2f}  {'✓' if abs(st['sheet_total_paid']-st['rebuilt_total_paid'])<0.01 else '✗'}")
+    print(f"  owed (due−paid) {st['rebuilt_owed']:,.2f} · headline excl. drop-offs {st['rebuilt_due_excl_dropoffs']:,.2f} (drop-off potential {st['dropoff_potential']:,.2f})")
+    if abs(st['sheet_total_due']-st['rebuilt_total_due']) >= 0.01 or abs(st['sheet_total_paid']-st['rebuilt_total_paid']) >= 0.01:
+        sys.exit("ABORT: headline does not reproduce — seed not written")
+    out.write_text(json.dumps(seed, indent=1, ensure_ascii=False))
+    print(f"  → wrote {out} ({out.stat().st_size//1024} KB)")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
