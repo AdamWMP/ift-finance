@@ -209,8 +209,24 @@ SALES_TARGETS = [200, 250, 300, 350, 400]
 # and the dashboard reflects.
 DUAL_NAMED_QUALS = {"The Cert", "The Career", "The Launchpad", "Launchpad Bundle"}
 
-def pathway_for(qual: str, stream: str) -> str:
+# Pilates: the Qualifications dropdown (f2302) was rebuilt in ONtraport and
+# only sign-ups since then carry a value, so most Pilates rows would land in
+# "Unspecified". ONtraport still says which package it is: the Reformer
+# price / spent fields are populated for The Career (Matwork + Reformer) and
+# zero for The Cert (Mat only). Labels match the live f2302 options exactly
+# so derived and explicit rows group together (Adam, 19 Oct 2026).
+PILATES_CERT   = "The Cert (Mat Pilates Instructor EQF Level 4)"
+PILATES_CAREER = "The Career (Matwork + Reformer)"
+
+def pilates_pathway(qual: str, reformer_price: float = 0.0, reformer_spent: float = 0.0) -> str:
     q = (qual or "").strip()
+    if q: return q
+    return PILATES_CAREER if (reformer_price or 0) > 0 or (reformer_spent or 0) > 0 else PILATES_CERT
+
+def pathway_for(qual: str, stream: str, *, reformer_price: float = 0.0, reformer_spent: float = 0.0) -> str:
+    q = (qual or "").strip()
+    if stream == "Pilates":
+        return pilates_pathway(q, reformer_price, reformer_spent)
     if not q: return "Unspecified"
     if q in DUAL_NAMED_QUALS:
         return f"{q} ({stream})"
