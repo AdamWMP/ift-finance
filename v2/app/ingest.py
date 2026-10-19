@@ -43,6 +43,7 @@ FOLLOWON_STREAMS: set[str] = set()
 DEFERRAL_PATTERNS = [
     re.compile(r"\bS\d\d\s*(combo|pilates|reformer|sse)\s*course\s*deferral\b", re.I),
     re.compile(r"\bA\d\d\s*(combo|pilates|reformer|sse)\s*course\s*deferral\b", re.I),
+    re.compile(r"\bW\d\d\s*(combo|pilates|reformer|sse)\s*course\s*deferral\b", re.I),
 ]
 
 def f(row, col): return (row.get(col) or "").strip() if col else ""
@@ -150,8 +151,8 @@ def ingest_csv():
                         stream, qualification, location, start_date, timetable,
                         price, spent, payment_plan, payment_method, pathway,
                         group_id, class_period, revenue_period,
-                        is_deferral, is_dropoff, is_grant, payment_status
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        is_deferral, is_dropoff, is_grant, payment_status, currency
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(contact_id, stream) DO UPDATE SET
                         -- Seeded historical rows (A25/S25 imports): the SHEET owns the
                         -- sale — price, revenue term, drop-off/grant flags, plan, method,
@@ -183,6 +184,7 @@ def ingest_csv():
                                                         THEN 1 ELSE students.is_deferral END
                                               ELSE excluded.is_deferral END,
                         is_grant       = CASE WHEN students.is_seeded=1 THEN students.is_grant       ELSE excluded.is_grant       END,
+                        currency       = CASE WHEN excluded.currency != '' THEN excluded.currency ELSE students.currency END,
                         payment_status = CASE WHEN students.is_seeded=1
                                               THEN CASE WHEN students.price <= 0 THEN 'unpaid'
                                                         WHEN excluded.spent >= students.price THEN 'paid'
@@ -202,6 +204,7 @@ def ingest_csv():
                     group_id(stream, location, start_iso), cls_period, rev_period,
                     is_def, 0, 1 if is_grant(plan) else 0,
                     derive_payment_status(price, spent),
+                    (r.get("Currency") or "").strip().upper(),
                 ))
                 ins += 1
         # Real count of LIVE rows held out (the loop counter also ticks for

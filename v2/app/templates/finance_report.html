@@ -322,6 +322,38 @@ table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
 </section>
 {% endif %}
 
+
+<section>
+  <h2>Where the money lands <small>by receiving account</small></h2>
+  <p class="section-lead">Derry / Harlow / Braintree students pay in £ (GBP Stripe account); all amounts shown in € as ONtraport stores them. £ at {{ '%.2f'|format(accounts.rate) }} £/€.</p>
+  <table class="tbl">
+    <thead><tr><th>Account</th><th style="text-align:right">€ collected</th><th style="text-align:right">£ equiv.</th><th style="text-align:right">%</th></tr></thead>
+    <tbody>
+    {% for a in accounts.accounts %}
+      <tr><td><strong>{{ a.account }}</strong></td><td class="num">€{{ '{:,.0f}'.format(a.eur) }}</td><td class="num">£{{ '{:,.0f}'.format(a.gbp) }}</td><td class="pct">{{ '{:.1f}'.format(a.pct) }}%</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if accounts.gbp_students %}
+  <p class="section-lead" style="margin-top:14px"><strong>{{ accounts.gbp_students|length }} £ payers</strong> · €{{ '{:,.0f}'.format(accounts.gbp_total_eur) }} (≈ £{{ '{:,.0f}'.format(accounts.gbp_total_gbp) }}) collected of €{{ '{:,.0f}'.format(accounts.gbp_due_eur) }} due</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Money to bank <small>for Simon</small></h2>
+  <p class="section-lead">Collected minus actual Stripe fees; non-Stripe money carries no fee.</p>
+  {% if stripe.configured %}
+  <div class="hero">
+    <div class="card"><div class="label">Collected</div><div class="num">€{{ '{:,.0f}'.format(macro.collected) }}</div></div>
+    <div class="card"><div class="label">Via Stripe</div><div class="num">€{{ '{:,.0f}'.format(stripe.stripe_collected_eur) }}</div><div class="sub">effective fee {{ '{:.2f}'.format(stripe.effective_rate*100) }}%</div></div>
+    <div class="card bad"><div class="label">Stripe fees (est.)</div><div class="num">−€{{ '{:,.0f}'.format(stripe.estimated_fees_eur) }}</div><div class="sub">actual in {{ stripe.window[0] }}→{{ stripe.window[1] }}: €{{ '{:,.0f}'.format(stripe.window_fees) }}</div></div>
+    <div class="card good"><div class="label">Money to bank</div><div class="num">€{{ '{:,.0f}'.format(stripe.money_to_bank_eur) }}</div></div>
+  </div>
+  {% else %}
+  <div class="insight" style="border-left-color:var(--warn)">Stripe not connected — add <code>STRIPE_API_KEY</code> (restricted: Balance transactions → Read) to the Render environment and the next sync fills this in.</div>
+  {% endif %}
+</section>
+
 <section>
   <h2>Chase list <small>top 15 of {{ chase_total }} outstanding</small></h2>
   <p class="section-lead">Students with money still due — sorted by largest balance first.</p>

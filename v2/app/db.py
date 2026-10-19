@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS students (
     payment_status TEXT,                  -- paid | partial | collections | declined | unpaid
     cert_issued INTEGER DEFAULT 0,        -- manual tick: physical cert handed over
     cert_issued_at TEXT,
+    currency TEXT DEFAULT '',             -- ONtraport last_currency_used: EUR | GBP (Derry / Harlow / Braintree payers)
     is_seeded INTEGER DEFAULT 0,          -- row came from a historical-term seed (A25/S25):
                                           -- the live sync may refresh `spent` only, never
                                           -- location / start / price / period
@@ -314,6 +315,12 @@ def init_db():
         existing_st = {r["name"] for r in c.execute("PRAGMA table_info(students)").fetchall()}
         if "is_seeded" not in existing_st:
             c.execute("ALTER TABLE students ADD COLUMN is_seeded INTEGER DEFAULT 0")
+        if "currency" not in existing_st:
+            c.execute("ALTER TABLE students ADD COLUMN currency TEXT DEFAULT ''")
+        c.execute("""CREATE TABLE IF NOT EXISTS stripe_balance_tx (
+            id TEXT PRIMARY KEY, created TEXT, type TEXT, currency TEXT,
+            amount REAL, fee REAL, net REAL, description TEXT, source_id TEXT)""")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_sbt_created ON stripe_balance_tx(created)")
 
 def extract_origin_period(text: str | None) -> str:
     """Pull a term marker (S25 / A25 / S26 / A26 …) out of any string.
@@ -326,17 +333,40 @@ def extract_origin_period(text: str | None) -> str:
     """
     import re as _re
     if not text: return ""
-    m = _re.search(r"\b([SA]\d{2})\b", text, _re.I)
+    m = _re.search(r"\b([SAW]\d{2})\b", text, _re.I)
     return m.group(1).upper() if m else ""
 
 
 def period_for(d: date | None) -> str:
-    """Feb–Jul → S{yy}, Aug–Dec → A{yy}, Jan → A{yy-1}. None → ''."""
+    """Term for a course start date.
+
+    Up to 2026 (two terms):  Feb–Jul → S{yy}, Aug–Dec → A{yy}, Jan → A{yy-1}.
+    From 2027 (three terms, Adam 2 Oct 2026):
+        Jan–Apr → W{yy}  (Winter)
+        May–Aug → S{yy}  (Summer)
+        Sep–Dec → A{yy}  (Autumn)
+    So Jan-2026 starts stay A25 but Jan-2027 starts are W27, not A26.
+    """
     if not d: return ""
     y, m = d.year, d.month
-    if 2 <= m <= 7:  return f"S{y % 100:02d}"
-    if 8 <= m <= 12: return f"A{y % 100:02d}"
+    yy = y % 100
+    if y >= 2027:
+        if m <= 4:  return f"W{yy:02d}"
+        if m <= 8:  return f"S{yy:02d}"
+        return f"A{yy:02d}"
+    if 2 <= m <= 7:  return f"S{yy:02d}"
+    if 8 <= m <= 12: return f"A{yy:02d}"
     return f"A{(y - 1) % 100:02d}"  # January
+
+def period_window(period: str) -> tuple[str, str]:
+    """Inclusive ISO date window a term's course starts fall in. Used to
+    scope date-based pulls (Stripe balance transactions) to a term."""
+    if not period or len(period) != 3: return ("", "")
+    s, yy = period[0].upper(), 2000 + int(period[1:])
+    if yy >= 2027:
+        return {"W": (f"{yy}-01-01", f"{yy}-04-30"), "S": (f"{yy}-05-01", f"{yy}-08-31"),
+                "A": (f"{yy}-09-01", f"{yy}-12-31")}.get(s, ("", ""))
+    return {"S": (f"{yy}-02-01", f"{yy}-07-31"), "A": (f"{yy}-08-01", f"{yy+1}-01-31")}.get(s, ("", ""))
 
 def set_meta(key: str, value: str) -> None:
     with get_db() as c:

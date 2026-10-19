@@ -35,6 +35,8 @@ def main(period: str = "S26") -> int:
     _step("ingest invoices from ONtraport", ontraport.ingest_invoices)
     _step("read sales-board categories", sales_board.write_transactions, period)
     _step("push live-money-in → L18", sales_board.push_live_money_in, period, "L18")
+    from . import stripe_fees
+    _step("pull Stripe fees (balance transactions)", stripe_fees.pull)
 
     from . import queries
     # backfill_followon_periods is a no-op while FOLLOWON_STREAMS is empty —

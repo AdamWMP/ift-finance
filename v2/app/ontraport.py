@@ -338,6 +338,8 @@ def fetch_contacts_full(contact_ids: list[str]) -> list[dict]:
                 "Last Name":   (c.get("lastname") or "").strip(),
                 "Email":       (c.get("email") or "").strip(),
                 "SMS Number":  (c.get("sms_number") or c.get("cell_phone") or "").strip(),
+                # EUR / GBP — Derry, Harlow and Braintree students pay in £.
+                "Currency":    (c.get("last_currency_used") or "").strip().upper(),
             }
             for fid, col in FIELD_MAP.items():
                 row[col] = _decode_value(fid, c.get(fid), fields_meta)
@@ -357,7 +359,7 @@ def refresh_s26_csv() -> dict:
     print(f"  fetched + decoded {len(rows)} contacts", flush=True)
     if not rows: return {"count": 0}
     # Build CSV columns from union of keys in fetched rows + a stable preferred order
-    preferred = ["Contact ID","Name","Last Name","Email","SMS Number"] + list(FIELD_MAP.values())
+    preferred = ["Contact ID","Name","Last Name","Email","SMS Number","Currency"] + list(FIELD_MAP.values())
     extras = sorted({k for r in rows for k in r if k not in preferred})
     cols = preferred + extras
     with csv_path.open("w", newline="") as fp:

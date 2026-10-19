@@ -777,6 +777,8 @@ def admin_finance_report(request: Request, period: str = "S26"):
         "groups": groups,
         "chase": top_chase,
         "chase_total": len(chase),
+        "accounts": queries.accounts_summary(period),
+        "stripe": queries.stripe_fees_summary(period),
         "group_details": group_details,
         "fees": fees,
         "drops": drops,
@@ -1122,4 +1124,6 @@ def board(request: Request, period: str = "S26"):
         "today": queries.today_panel(period),
         "deposit": queries.avg_deposit(period),
         "simon": queries.simon_panel(period),
+        "accounts": queries.accounts_summary(period),
+        "stripe": queries.stripe_fees_summary(period),
     })

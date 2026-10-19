@@ -1656,10 +1656,13 @@ def backfill_followon_periods() -> dict:
 # see total + COMBO + PILATES + ONLINE/DERRY broken down at a glance.
 
 def _prev_period(period: str) -> str:
-    """S26 → A25, A25 → S25, S25 → A24, etc."""
+    """Previous term. Two-term years to 2026 (S26 → A25, A25 → S25); three
+    terms from 2027 (W27 → A26, S27 → W27, A27 → S27, W28 → A27)."""
     if len(period) != 3:
         return ""
     season, yy = period[0].upper(), int(period[1:])
+    if yy >= 27:
+        return {"W": f"A{yy-1:02d}", "S": f"W{yy:02d}", "A": f"S{yy:02d}"}.get(season, "")
     if season == "S":
         return f"A{yy-1:02d}"
     if season == "A":
@@ -2819,9 +2822,104 @@ def periods_with_data() -> list[str]:
         rs = c.execute("""
             SELECT DISTINCT revenue_period AS p FROM students
             WHERE revenue_period <> ''
-            ORDER BY substr(p,2)||substr(p,1,1)
+            ORDER BY substr(p,2),
+                     CASE substr(p,1,1) WHEN 'W' THEN 1 WHEN 'S' THEN 2 WHEN 'A' THEN 3 ELSE 9 END
         """).fetchall()
     return [r["p"] for r in rs]
+
+
+# --- Accounts: where the money actually lands (€ / £) -----------------------
+# Adam, 19 Oct 2026: Derry / Harlow / Braintree students pay in £ into the
+# GBP Stripe account; everyone else in € (Stripe EUR, cash, bank transfer,
+# Revolut, Skillnet). ONtraport stores every amount in € (converted at its
+# own rate), so the headline stays €; this view splits it by account and
+# shows the £ side at GBP_RATE (env, default 0.86 £ per €) for the toggle.
+
+GBP_RATE = float(__import__("os").environ.get("GBP_RATE", "0.86"))
+
+def accounts_summary(period: str) -> dict:
+    """Collected money by receiving account, plus the £-paying students."""
+    manual = _manual_payments_per_contact(period)
+    with get_db() as c:
+        rows = c.execute(f"""
+            SELECT contact_id, first_name||' '||last_name AS name, stream, location,
+                   COALESCE(NULLIF(payment_method,''),'Stripe') AS method,
+                   COALESCE(NULLIF(currency,''),'EUR') AS currency,
+                   COALESCE(price,0) AS price, {COLLECTED_SQL} AS spent, is_dropoff
+            FROM students WHERE revenue_period=?
+        """, (period,)).fetchall()
+    accounts: dict[str, float] = {}
+    gbp_rows = []
+    for r in rows:
+        spent = r["spent"] or 0
+        for m, amt in manual.get(r["contact_id"], {}).items():
+            accounts[m] = accounts.get(m, 0) + amt
+            spent -= amt
+        spent = max(spent, 0)
+        acct = r["method"]
+        if acct == "Stripe":
+            acct = "Stripe GBP" if r["currency"] == "GBP" else "Stripe EUR"
+        accounts[acct] = accounts.get(acct, 0) + spent
+        if r["currency"] == "GBP":
+            gbp_rows.append({**dict(r), "spent_eur": spent, "spent_gbp": spent * GBP_RATE,
+                             "price_gbp": (r["price"] or 0) * GBP_RATE})
+    sb = sum(_sales_board_by_category(period).values())
+    if sb > 0:
+        accounts["Sales Board (other streams)"] = sb
+    total = sum(accounts.values()) or 1
+    out = sorted(({"account": k, "eur": v, "gbp": v * GBP_RATE, "pct": v / total * 100}
+                  for k, v in accounts.items() if v > 0), key=lambda x: -x["eur"])
+    gbp_rows.sort(key=lambda x: (x["location"] or "", x["name"] or ""))
+    return {"accounts": out, "total_eur": total, "rate": GBP_RATE,
+            "gbp_students": gbp_rows,
+            "gbp_total_eur": sum(x["spent_eur"] for x in gbp_rows),
+            "gbp_total_gbp": sum(x["spent_gbp"] for x in gbp_rows),
+            "gbp_due_eur": sum((x["price"] or 0) for x in gbp_rows if not x["is_dropoff"])}
+
+
+def stripe_fees_summary(period: str) -> dict:
+    """Actual Stripe fees (balance transactions pulled by app.stripe_fees)
+    over the term's date window, by month and currency, plus the resulting
+    'money to bank' for the term: non-Stripe money in full + Stripe money
+    net of the effective fee rate seen in the window."""
+    from .db import period_window
+    lo, hi = period_window(period)
+    with get_db() as c:
+        have = c.execute("SELECT COUNT(*) FROM stripe_balance_tx").fetchone()[0]
+        months = c.execute("""
+            SELECT substr(created,1,7) AS month, currency,
+                   COUNT(*) AS n, SUM(amount) AS gross, SUM(fee) AS fees, SUM(net) AS net
+            FROM stripe_balance_tx
+            WHERE type IN ('charge','payment') AND created >= ? AND created <= ?
+            GROUP BY month, currency ORDER BY month, currency
+        """, (lo, hi + "T23:59:59")).fetchall() if lo else []
+        tot = c.execute("""
+            SELECT SUM(amount) AS gross, SUM(fee) AS fees, SUM(net) AS net, COUNT(*) AS n
+            FROM stripe_balance_tx
+            WHERE type IN ('charge','payment') AND created >= ? AND created <= ?
+        """, (lo, hi + "T23:59:59")).fetchone() if lo else None
+        alltime = c.execute("""
+            SELECT SUM(amount) AS gross, SUM(fee) AS fees FROM stripe_balance_tx
+            WHERE type IN ('charge','payment')
+        """).fetchone()
+    gross = (tot["gross"] if tot else 0) or 0
+    fees  = (tot["fees"]  if tot else 0) or 0
+    eff   = (fees / gross) if gross else ((alltime["fees"] or 0) / (alltime["gross"] or 1) if alltime and alltime["gross"] else 0.0)
+    acc = accounts_summary(period)
+    stripe_eur = sum(a["eur"] for a in acc["accounts"] if a["account"].startswith("Stripe"))
+    other_eur  = acc["total_eur"] - stripe_eur
+    est_fees   = stripe_eur * eff
+    return {
+        "configured": have > 0,
+        "window": (lo, hi),
+        "months": [dict(m) for m in months],
+        "window_gross": gross, "window_fees": fees, "window_net": (tot["net"] if tot else 0) or 0,
+        "window_n": (tot["n"] if tot else 0) or 0,
+        "effective_rate": eff,
+        "stripe_collected_eur": stripe_eur, "other_collected_eur": other_eur,
+        "estimated_fees_eur": est_fees,
+        "money_to_bank_eur": acc["total_eur"] - est_fees,
+    }
 
 def _row_with_pct(r) -> dict:
     d = dict(r)

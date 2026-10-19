@@ -276,6 +276,84 @@
   </table>
 </section>
 
+
+{# ---- Accounts (€ / £ toggle) + Money to bank (Simon) — Adam, 19 Oct 2026 ---- #}
+<section class="block" id="accounts">
+  <div class="sales-head">
+    <h2>Where the money lands · {{ period }}</h2>
+    <div class="sales-meta muted">
+      Derry / Harlow / Braintree students pay in £ (GBP Stripe account); everyone else in €. ONtraport stores every amount in €, so the headline stays € — this is the split by account.
+      <button type="button" class="csv-btn" id="ccy-toggle" data-ccy="EUR" style="margin-left:10px">Show £</button>
+      <span class="muted small" id="ccy-note">rate {{ '%.2f'|format(accounts.rate) }} £/€ (GBP_RATE)</span>
+    </div>
+  </div>
+  <div class="hero" style="grid-template-columns:repeat(3,1fr)">
+    {% for a in accounts.accounts %}
+    <div class="card{% if a.account == 'Stripe GBP' %} accent{% endif %}">
+      <div class="label">{{ a.account }}</div>
+      <div class="num ccy" data-eur="{{ a.eur }}" data-gbp="{{ a.gbp }}">€{{ "{:,.0f}".format(a.eur) }}</div>
+      <div class="sub muted small">{{ "{:.1f}".format(a.pct) }}% of collected</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if accounts.gbp_students %}
+  <h3 style="margin:14px 0 6px">£ payers ({{ accounts.gbp_students|length }}) · collected <span class="ccy" data-eur="{{ accounts.gbp_total_eur }}" data-gbp="{{ accounts.gbp_total_gbp }}">€{{ "{:,.0f}".format(accounts.gbp_total_eur) }}</span> of <span class="ccy" data-eur="{{ accounts.gbp_due_eur }}" data-gbp="{{ accounts.gbp_due_eur * accounts.rate }}">€{{ "{:,.0f}".format(accounts.gbp_due_eur) }}</span> due</h3>
+  <table class="students">
+    <thead><tr><th>Student</th><th>Stream</th><th>Location</th><th>Method</th><th class="num">Due</th><th class="num">Paid</th></tr></thead>
+    <tbody>
+    {% for s in accounts.gbp_students %}
+      <tr>
+        <td><a href="https://app.ontraport.com/#!/contact/edit&id={{ s.contact_id }}" target="_blank">{{ s.name }}</a>{% if s.is_dropoff %} <span class="status behind">drop-off</span>{% endif %}</td>
+        <td>{{ s.stream }}</td><td>{{ s.location or '—' }}</td><td>{{ s.method }}</td>
+        <td class="num ccy" data-eur="{{ s.price }}" data-gbp="{{ s.price_gbp }}">€{{ "{:,.0f}".format(s.price) }}</td>
+        <td class="num ccy" data-eur="{{ s.spent_eur }}" data-gbp="{{ s.spent_gbp }}">€{{ "{:,.0f}".format(s.spent_eur) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="block" id="money-to-bank">
+  <div class="sales-head">
+    <h2>Money to bank · {{ period }} <span class="muted small">(for Simon)</span></h2>
+    <div class="sales-meta muted">Collected minus actual Stripe fees. Non-Stripe money (cash, bank transfer, Revolut, Skillnet, Sales Board) carries no fee.</div>
+  </div>
+  {% if stripe.configured %}
+  <div class="hero">
+    <div class="card"><div class="label">Collected (all accounts)</div><div class="num">€{{ "{:,.0f}".format(macro.collected) }}</div></div>
+    <div class="card"><div class="label">Via Stripe</div><div class="num">€{{ "{:,.0f}".format(stripe.stripe_collected_eur) }}</div><div class="sub muted small">effective fee {{ "{:.2f}".format(stripe.effective_rate*100) }}% over {{ stripe.window[0] }} → {{ stripe.window[1] }}</div></div>
+    <div class="card"><div class="label">Stripe fees (est. on this term)</div><div class="num" style="color:var(--bad)">−€{{ "{:,.0f}".format(stripe.estimated_fees_eur) }}</div><div class="sub muted small">actual in window: €{{ "{:,.0f}".format(stripe.window_fees) }} on {{ stripe.window_n }} payments</div></div>
+    <div class="card accent"><div class="label">Money to bank</div><div class="num">€{{ "{:,.0f}".format(stripe.money_to_bank_eur) }}</div></div>
+  </div>
+  {% if stripe.months %}
+  <table class="students" style="margin-top:12px">
+    <thead><tr><th>Month</th><th>Currency</th><th class="num">Payments</th><th class="num">Gross</th><th class="num">Fees</th><th class="num">Net</th><th class="num">Fee %</th></tr></thead>
+    <tbody>
+    {% for m in stripe.months %}
+      <tr><td>{{ m.month }}</td><td>{{ m.currency }}</td><td class="num">{{ m.n }}</td>
+          <td class="num">{{ "{:,.0f}".format(m.gross) }}</td><td class="num" style="color:var(--bad)">{{ "{:,.2f}".format(m.fees) }}</td>
+          <td class="num">{{ "{:,.0f}".format(m.net) }}</td><td class="num">{{ "{:.2f}".format((m.fees / m.gross * 100) if m.gross else 0) }}%</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% else %}
+  <p class="muted">Not connected yet. Add <code>STRIPE_API_KEY</code> to the Render environment — a <b>restricted</b> key with only <i>Balance transactions → Read</i> (Stripe Dashboard → Developers → API keys → Create restricted key). The next sync pulls every charge's gross / fee / net and this panel lights up.</p>
+  {% endif %}
+</section>
+
+<script>
+(function(){
+  var btn=document.getElementById('ccy-toggle'); if(!btn) return;
+  var fmt=function(v,c){return (c==='GBP'?'£':'€')+Math.round(v).toLocaleString('en-IE');};
+  btn.addEventListener('click',function(){
+    var to=btn.dataset.ccy==='EUR'?'GBP':'EUR'; btn.dataset.ccy=to; btn.textContent=to==='GBP'?'Show €':'Show £';
+    document.querySelectorAll('#accounts .ccy').forEach(function(el){ el.textContent=fmt(parseFloat(to==='GBP'?el.dataset.gbp:el.dataset.eur),to); });
+  });
+})();
+</script>
+
 <section class="block">
   <h2>How money has come in</h2>
   <table class="bars">
